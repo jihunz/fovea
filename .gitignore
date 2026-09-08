@@ -373,3 +373,13 @@ pyrightconfig.json
 *.pth
 *.onnx
 src/model/
+
+# Fovea local index & caches
+src/data/*
+!src/data/.gitkeep
+
+# Fovea frontend modules (override python template ignores)
+!src/static/lib/
+!src/static/lib/**
+
+.DS_Store

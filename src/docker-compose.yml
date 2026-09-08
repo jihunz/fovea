@@ -1,12 +1,15 @@
-version: '3.9'
 services:
-  megafall-viewer:
+  fovea:
     build: .
+    container_name: fovea
     ports:
       - "8888:8000"
     volumes:
-      - .:/app
-      - ${HOST_PATH}:/host
+      - .:/app                 # live code + index db (./data) + models (./model)
+      - ${HOST_PATH}:/host     # your datasets root, browsable inside the app
     environment:
-      - PYTHONPATH=/app
       - HOST_PATH=${HOST_PATH}
+      - CONTAINER_MOUNT=/host
+      - FOVEA_DATA_DIR=/app/data
+      - FOVEA_MODEL_DIR=/app/model
+    restart: unless-stopped
