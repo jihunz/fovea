@@ -7,8 +7,8 @@ YOLO 포맷 데이터셋을 등록하면 인덱싱 → 헬스체크 → 갤러�
 
 ---
 
-> 이 저장소는 `cv-data-viewer`를 **Fovea**로 전면 재설계한 버전입니다. 저장소 이름도 `fovea`로 바꾸는 것을 권장합니다
-> (`gh repo rename fovea` 또는 GitHub 설정에서 변경 후 `git remote set-url origin …`).
+> 이전 이름은 `cv-data-viewer`였습니다. 옛 URL은 GitHub가 자동으로 리다이렉트하지만, 기존 클론은 원격 주소를 갱신해 주세요:
+> `git remote set-url origin https://github.com/jihunz/fovea.git`
 
 ## 왜 Fovea인가
 
@@ -25,6 +25,10 @@ YOLO 포맷 데이터셋을 등록하면 인덱싱 → 헬스체크 → 갤러�
 
 ## 빠른 시작
 
+```bash
+git clone https://github.com/jihunz/fovea.git && cd fovea
+```
+
 ### 로컬 (Python 3.11+)
 
 ```bash
@@ -32,6 +36,8 @@ cd src
 pip install -r requirements.txt        # ultralytics/torch는 선택 — AI 자동 라벨에만 필요
 python -m fovea --port 8000            # http://localhost:8000
 ```
+
+옵션: `--host 0.0.0.0`(다른 PC에서 접속), `--data-dir`(인덱스 DB·썸네일 위치), `--model-dir`(YOLO 가중치 폴더), `--reload`(개발용).
 
 ### Docker
 
