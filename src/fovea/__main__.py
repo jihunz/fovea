@@ -7,7 +7,8 @@ import os
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="fovea", description="Fovea — CV dataset review & labeling workspace")
-    ap.add_argument("--host", default="0.0.0.0")
+    # Loopback by default: the API has no authentication and can browse the whole filesystem.
+    ap.add_argument("--host", default="127.0.0.1", help="use 0.0.0.0 to allow other machines (no auth — trusted networks only)")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--data-dir", default=None, help="where the index DB and thumbnail cache live")
     ap.add_argument("--model-dir", default=None, help="folder with YOLO .pt weights for auto-label")

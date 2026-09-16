@@ -37,7 +37,7 @@ pip install -r requirements.txt        # ultralytics/torch는 선택 — AI 자�
 python -m fovea --port 8000            # http://localhost:8000
 ```
 
-옵션: `--host 0.0.0.0`(다른 PC에서 접속), `--data-dir`(인덱스 DB·썸네일 위치), `--model-dir`(YOLO 가중치 폴더), `--reload`(개발용).
+옵션: `--host 0.0.0.0`(다른 PC에서 접속 — 인증이 없으므로 신뢰할 수 있는 네트워크에서만), `--data-dir`(인덱스 DB·썸네일 위치), `--model-dir`(YOLO 가중치 폴더), `--reload`(개발용). 기본값은 이 PC에서만 접속되는 `127.0.0.1`입니다.
 
 ### Docker
 
@@ -46,6 +46,8 @@ cd src
 cp .env.example .env                   # HOST_PATH = 데이터셋이 있는 폴더 (컨테이너의 /host 로 마운트)
 docker compose up --build -d           # http://localhost:8888
 ```
+
+Docker 구성은 호스트의 모든 네트워크 인터페이스에 8888 포트를 엽니다. 인증이 없으므로 같은 네트워크의 다른 PC에서도 `HOST_PATH` 아래 파일을 탐색할 수 있습니다 — 이 PC에서만 쓰려면 `docker-compose.yml`의 포트를 `"127.0.0.1:8888:8000"`으로 바꾸세요.
 
 호스트 경로(`/Users/me/data/...`, `C:\data\...`)를 그대로 입력하면 컨테이너 경로로 자동 매핑됩니다. 인덱스 DB와 썸네일 캐시는 `src/data/`에, YOLO 가중치는 `src/model/`에 둡니다.
 
