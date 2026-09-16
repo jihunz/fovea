@@ -794,3 +794,76 @@ def test_writing_data_yaml_updates_the_detected_file_and_keeps_foreign_keys(tmp_
     assert doc["nc"] == 2 and doc["names"] == {0: "person", 1: "fall"}
     assert doc["train"] == "images/train" and doc["val"] == "images/val"
     assert not [p for p in root.iterdir() if p.name.startswith(".fovea-")], "no temp files left behind"
+
+
+# ---------------------------------------------------------------- image rendering
+
+
+def test_rotated_photos_and_high_bit_depth_images_render_correctly(tmp_path, monkeypatch):
+    import numpy as np
+    from PIL import Image as _Image
+    from fovea.core import thumbs
+    from fovea.core.scanner import read_dims
+
+    monkeypatch.setattr(thumbs, "THUMB_DIR", tmp_path / "cache")
+    # a phone photo stored 400x200 with "rotate 90" in EXIF is displayed 200x400
+    photo = tmp_path / "phone.jpg"
+    exif = _Image.Exif(); exif[0x0112] = 6
+    _Image.new("RGB", (400, 200), (200, 30, 30)).save(photo, exif=exif)
+    assert read_dims(str(photo)) == (200, 400)
+    with _Image.open(thumbs.thumb_for(str(photo), 128)) as t:
+        assert t.size[1] > t.size[0], "the thumbnail must be upright like the browser shows the original"
+
+    # 16-bit and float TIFFs: a gradient, not a flat white/black rectangle
+    for name, arr in (("u16.tif", np.tile(np.linspace(0, 65535, 300).astype("uint16"), (40, 1))),
+                      ("f32.tif", np.tile(np.linspace(0, 1, 300).astype("float32"), (40, 1)))):
+        src = tmp_path / name
+        _Image.fromarray(arr).save(src)
+        with _Image.open(thumbs.thumb_for(str(src), 256)) as t:
+            px = np.asarray(t.convert("L"), dtype=float)
+        assert px.min() < 20 and px.max() > 235 and 100 < px.mean() < 155, name
+        full = thumbs.rendition_for(str(src))
+        with _Image.open(full) as r:
+            assert r.format == "JPEG" and r.size == (300, 40), "renditions keep the native resolution"
+
+    # ordinary images keep their existing cache keys (no mass invalidation)
+    plain = tmp_path / "plain.jpg"
+    _Image.new("RGB", (64, 48)).save(plain)
+    mt = plain.stat().st_mtime
+    import hashlib
+    assert thumbs._key(str(plain), 256, mt, *thumbs._probe(str(plain), mt)) == hashlib.sha1(f"{plain}|256|{mt:.3f}".encode()).hexdigest()
+
+
+def test_thumbnails_revalidate_and_tiffs_are_displayable(tmp_path, monkeypatch):
+    import numpy as np
+    from PIL import Image as _Image
+    from fastapi.testclient import TestClient
+    from fovea import db
+    from fovea.core import thumbs
+    from fovea.core.scanner import refresh_image, scan_dataset
+    from fovea.jobs import Job
+    from fovea.main import app
+
+    monkeypatch.setattr(thumbs, "THUMB_DIR", tmp_path / "cache")
+    root = tmp_path / "tif"
+    (root / "images").mkdir(parents=True)
+    _Image.fromarray(np.tile(np.linspace(0, 4000, 120).astype("uint16"), (90, 1))).save(root / "images" / "a.tif")
+    ds_id = _register(root)
+    try:
+        scan_dataset(ds_id, Job(id="t", kind="scan"))
+        iid = db.query_one("SELECT id FROM images WHERE dataset_id=?", (ds_id,))["id"]
+        c = TestClient(app)
+        r = c.get(f"/api/img/{iid}")
+        assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+
+        t1 = c.get(f"/api/thumb/{iid}?s=256")
+        assert t1.headers["cache-control"] == "private, no-cache" and t1.headers["etag"]
+        assert c.get(f"/api/thumb/{iid}?s=256", headers={"If-None-Match": t1.headers["etag"]}).status_code == 304
+        assert "immutable" in c.get(f"/api/thumb/{iid}?s=256&v=123.2").headers["cache-control"]
+
+        # an image indexed while unreadable gets its size once it can be read
+        db.execute("UPDATE images SET width=NULL, height=NULL WHERE id=?", (iid,))
+        row = refresh_image(iid)
+        assert (row["width"], row["height"]) == (120, 90) and "image_unreadable" not in row["issues"]
+    finally:
+        _drop(ds_id)

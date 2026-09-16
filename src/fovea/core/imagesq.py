@@ -174,7 +174,7 @@ def row_to_item(row: dict, with_paths: bool = False) -> dict:
     item = {
         "id": row["id"], "rel_path": row["rel_path"], "split": row["split"],
         "width": row["width"], "height": row["height"], "size": row["size"],
-        "has_label": bool(row["has_label"]), "n_boxes": row["n_boxes"],
+        "has_label": bool(row["has_label"]), "n_boxes": row["n_boxes"], "mtime": row["mtime"],
         "classes": db.loads(row["classes"]), "issues": db.loads(row["issues"]), "seq": row["seq"],
         "review": ({"status": row["review_status"], "note": row["review_note"] or "", "updated_at": row["review_at"]}
                    if row.get("review_status") else None),

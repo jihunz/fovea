@@ -35,7 +35,11 @@ export const patch = (path, body, opts = {}) => api(path, { ...opts, method: 'PA
 export const del = (path, opts = {}) => api(path, { ...opts, method: 'DELETE' });
 
 export const imgUrl = (id) => `/api/img/${id}`;
-export const thumbUrl = (id, s = 256) => `/api/thumb/${id}?s=${s}`;
+// Bump THUMB_RENDER whenever the server changes how thumbnails are drawn: versioned URLs are cached for good.
+export const THUMB_RENDER = 2;
+/** `v` = the image's mtime. With it the browser may cache the thumbnail indefinitely (a changed file gets a
+    new URL); without it every view revalidates with a cheap 304. */
+export const thumbUrl = (id, s = 256, v) => `/api/thumb/${id}?s=${s}${v != null ? `&v=${Math.round(v)}.${THUMB_RENDER}` : ''}`;
 export { qs };
 
 /**

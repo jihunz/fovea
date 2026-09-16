@@ -167,9 +167,16 @@ def enumerate_source(src: Source, errors: Optional[List[str]] = None,
 
 
 def read_dims(path: str) -> Optional[Tuple[int, int]]:
+    """Display size: EXIF orientations 5-8 swap width and height, as every browser and YOLO trainer does."""
     try:
         with Image.open(path) as im:
-            return int(im.width), int(im.height)
+            w, h = int(im.width), int(im.height)
+            try:
+                if int(im.getexif().get(0x0112) or 1) in (5, 6, 7, 8):
+                    w, h = h, w
+            except Exception:  # noqa: BLE001 — malformed EXIF: keep the raster size
+                pass
+            return w, h
     except Exception:
         return None
 
@@ -417,12 +424,19 @@ def refresh_image(image_id: int, n_classes: Optional[int] = None, update_counts:
         boxes, _c, issues = read_label_file(lbl, n_classes)
     else:
         issues.add("missing_label")
-    if row["width"] is None:
-        issues.add("image_unreadable")
+    width, height = row["width"], row["height"]
+    if width is None:
+        # Indexed while unreadable (e.g. still being copied in). Try again rather than keep the image
+        # flagged forever with an unknown size until the next full rescan.
+        dims = read_dims(row["abs_path"])
+        if dims:
+            width, height = dims
+        else:
+            issues.add("image_unreadable")
     cls_ids = sorted({int(b[0]) for b in boxes})
     with db.transaction() as conn:
-        conn.execute("UPDATE images SET has_label=?, n_boxes=?, classes=?, issues=?, lmtime=? WHERE id=?",
-                     (has_label, len(boxes), db.dumps(cls_ids), db.dumps(sorted(issues)), lmtime, image_id))
+        conn.execute("UPDATE images SET has_label=?, n_boxes=?, classes=?, issues=?, lmtime=?, width=?, height=? WHERE id=?",
+                     (has_label, len(boxes), db.dumps(cls_ids), db.dumps(sorted(issues)), lmtime, width, height, image_id))
         conn.execute("DELETE FROM boxes WHERE image_id=?", (image_id,))
         if boxes:
             conn.executemany("INSERT INTO boxes(image_id, dataset_id, cls, xc, yc, w, h) VALUES(?,?,?,?,?,?,?)",

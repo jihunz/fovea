@@ -149,7 +149,7 @@ async function render(el, { ctx, dataset, fovea }) {
     const el = h('div', { class: cls('tile', selected.has(it.id) && 'selected', focusIdx === index && 'focus'), 'data-review': it.review ? it.review.status : '', 'data-idx': index });
     // No loading="lazy": the browser heuristic can defer in-viewport images indefinitely. `imgLoader`
     // decides, using the same scroll container the gallery already observes for paging.
-    const img = h('img', { decoding: 'async', alt: '', dataset: { src: fovea.api.thumbUrl(it.id, thumbPx(TILE_PX[tileSize])) } });
+    const img = h('img', { decoding: 'async', alt: '', dataset: { src: fovea.api.thumbUrl(it.id, thumbPx(TILE_PX[tileSize]), it.mtime) } });
     const pic = h('div', { class: 'pic', style: it.width && it.height ? `aspect-ratio:${it.width}/${it.height}` : '' }, img);
     el._img = img; el._pic = pic;   // observed by appendTile/refreshTile once inserted
     // The overlay is always attached when there are boxes; `.grid.no-overlay` and the loading state
@@ -157,7 +157,17 @@ async function render(el, { ctx, dataset, fovea }) {
     if (it.boxes && it.boxes.length) pic.appendChild(fovea.boxLayer(it.boxes, { names, stroke: 1.5 }));
     pic.style.width = '100%'; pic.style.height = '100%';
     // fit within frame: use object-fit via wrapper sizing
-    const frame = h('div', { class: 'frame' }, fitWrap(pic, it));
+    const wrap = fitWrap(pic, it);
+    const frame = h('div', { class: 'frame' }, wrap);
+    // The stored size can disagree with the picture: unknown (indexed while unreadable) or pre-rotation (EXIF).
+    // The decoded thumbnail has the true proportions — use them, or the overlay lands beside the objects.
+    img.addEventListener('load', () => {
+      const nw = img.naturalWidth, nh = img.naturalHeight;
+      if (!nw || !nh) return;
+      const stored = it.width && it.height ? it.width / it.height : 0;
+      if (stored && Math.abs(stored - nw / nh) / (nw / nh) < 0.02) return;
+      shapeWrap(wrap, nw, nh);
+    }, { once: true });
     el.appendChild(frame);
     el.appendChild(h('div', { class: 'badges' }, it.n_boxes ? h('span', { class: 'badge' }, String(it.n_boxes)) : null, it.split ? h('span', { class: 'badge' }, it.split) : null));
     el.appendChild(h('div', { class: 'rv' }, icon(it.review ? REVIEW[it.review.status].icon : 'check', 12)));
@@ -172,10 +182,14 @@ async function render(el, { ctx, dataset, fovea }) {
   }
   function fitWrap(pic, it) {
     // wrapper that keeps the picture's aspect ratio inside a 4:3 frame
-    const w = it.width || 4, hh = it.height || 3; const frameRatio = 4 / 3; const r = w / hh;
-    const wrap = h('div', { style: `position:relative;${r >= frameRatio ? 'width:100%;height:auto;' : 'height:100%;width:auto;'}aspect-ratio:${w}/${hh};max-width:100%;max-height:100%` });
+    const wrap = h('div');
+    shapeWrap(wrap, it.width || 4, it.height || 3);
     wrap.appendChild(pic);
     return wrap;
+  }
+  function shapeWrap(wrap, w, hh) {
+    const r = w / hh;
+    wrap.style.cssText = `position:relative;${r >= 4 / 3 ? 'width:100%;height:auto;' : 'height:100%;width:auto;'}aspect-ratio:${w}/${hh};max-width:100%;max-height:100%`;
   }
   function refreshTile(index) {
     const old = tiles.get(index); const it = cursor.items[index];
@@ -192,7 +206,7 @@ async function render(el, { ctx, dataset, fovea }) {
       const it = cursor.items[idx]; if (!it) continue;
       const img = el.querySelector('img'); const pic = el.querySelector('.pic');
       if (!img || !pic) continue;
-      const next = fovea.api.thumbUrl(it.id, size);
+      const next = fovea.api.thumbUrl(it.id, size, it.mtime);
       if (img.getAttribute('src') === next) continue;
       if (img.dataset.src) { img.dataset.src = next; continue; }   // not requested yet — just retarget
       if (pic.classList.contains('is-loading')) { img.src = next; trackImage(img, pic); continue; }
