@@ -18,11 +18,17 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   let scale = 1, tx = 0, ty = 0, fitScale = 1, customView = false, prevDims = null;
   let undo = [], redo = [];
   let dirty = false, saveTimer = null, saving = false, destroyed = false;
+  // loading: a new image is being fetched. While true, `item` already points at the NEXT image but `boxes`
+  // and the canvas still show the previous one — every mutation path is blocked so an edit can never be
+  // written into the wrong image's label file.
+  let loading = false, navToken = 0;
+  let version = null;                 // content hash of the label file this editor loaded; sent back for conflict detection
+  let saveRetries = 0, lastFailToast = 0, conflictOpen = false, lastOutcome = 'ok';   // lastOutcome: ok | error | conflict
   let mouse = { x: 0, y: 0, inside: false }, drag = null, spaceDown = false;
   const opts = { propagate: localStorage.getItem('fovea.ann.propagate') === '1', labels: localStorage.getItem('fovea.ann.labels') !== '0', pointW: 0.15, pointH: 0.30, crosshair: true };
   const ai = { model: '', conf: 0.25, classes: '', mode: 'fill', map: {}, modelClasses: null, keepUnmapped: false, job: null };
   let rangeStart = null;
-  let classBuf = '', classBufTimer = null;
+  let classBuf = '', classBufTimer = null, classBufSel = -1;
   let autoTimer = null;
 
   // ---------------------------------------------------------------- DOM
@@ -69,7 +75,14 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   const rangeCls = h('select', { class: 'select select-sm', style: 'width:auto' });
   const rangeApply = h('button', { class: 'btn btn-sm btn-primary', disabled: true, onClick: () => applyRange() }, 'Apply to range');
   const saveState = h('span', { class: 'save-state' }, icon('check', 12), 'Saved');
-  side.appendChild(h('div', { class: 'sec' }, h('h4', 'Boxes', boxCount, h('span', { class: 'spacer' }), h('button', { class: 'btn btn-ghost btn-sm', 'data-tip': 'Delete all boxes', onClick: () => { if (boxes.length) { pushHistory(); boxes = []; sel = -1; changed(); } } }, icon('trash', 12))), boxList));
+  side.appendChild(h('div', { class: 'sec' }, h('h4', 'Boxes', boxCount, h('span', { class: 'spacer' }), h('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Delete all boxes on this image', 'data-tip': 'Delete all boxes', onClick: async () => {
+      if (!boxes.length || !editable()) return;
+      const name = item ? item.rel_path.split('/').pop() : 'this image';
+      if (!await ui.confirm({ title: 'Delete all boxes?', message: `Remove all ${boxes.length} boxes from ${name} and rewrite its label file?`, okLabel: 'Delete all', danger: true })) return;
+      if (!editable()) return;
+      pushHistory(); boxes = []; sel = -1; changed();
+      ui.toast(`All boxes deleted — ${MOD}Z to undo`, { timeout: 5000 });
+    } }, icon('trash', 12))), boxList));
   side.appendChild(h('div', { class: 'sec' }, h('h4', 'Review', h('span', { class: 'spacer' }), h('span', { class: 'xs faint' }, '⇧A ⇧F ⇧X')), reviewRow));
   side.appendChild(h('div', { class: 'sec' }, h('h4', 'Image'), infoKv, issuesRow));
   side.appendChild(h('div', { class: 'sec' }, h('h4', 'Range edit'), h('div', { class: 'small muted mb-8' }, 'Set the class of every box across a range of images (e.g. a fall sequence).'),
@@ -122,10 +135,10 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     boxCount.textContent = String(boxes.length);
     boxList.innerHTML = '';
     if (!boxes.length) boxList.appendChild(h('div', { class: 'small faint' }, item && item.has_label ? 'No boxes (empty label)' : 'No boxes yet'));
-    boxes.forEach((b, i) => boxList.appendChild(h('div', { class: cls('box-row', i === sel && 'active'), onClick: () => { sel = i; draw(); renderBoxes(); }, onMouseenter: () => { hover = i; draw(); }, onMouseleave: () => { hover = -1; draw(); } },
+    boxes.forEach((b, i) => boxList.appendChild(h('div', { class: cls('box-row', i === sel && 'active'), onClick: () => { if (loading) return; sel = i; draw(); renderBoxes(); }, onMouseenter: () => { hover = i; draw(); }, onMouseleave: () => { hover = -1; draw(); } },
       h('span', { class: 'idx' }, String(i + 1)), h('span', { class: 'swatch', style: `background:${classColor(b[0])}` }),
       h('span', { class: 'name' }, `${b[0]} · ${className(names, b[0])}`), h('span', { class: 'geo' }, `${Math.round(b[3] * 100)}×${Math.round(b[4] * 100)}%`),
-      h('button', { class: 'btn btn-ghost btn-sm btn-icon del', onClick: (e) => { e.stopPropagation(); pushHistory(); boxes.splice(i, 1); sel = -1; changed(); } }, icon('x', 12)))));
+      h('button', { class: 'btn btn-ghost btn-sm btn-icon del', 'aria-label': `Delete box ${i + 1}`, onClick: (e) => { e.stopPropagation(); if (!editable()) return; pushHistory(); boxes.splice(i, 1); sel = -1; changed(); } }, icon('x', 12)))));
   }
   let hover = -1;
   function renderInfo() {
@@ -151,7 +164,10 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   }
 
   // ---------------------------------------------------------------- classes
-  function setActiveClass(i) { activeCls = i; if (sel >= 0 && boxes[sel][0] !== i) { pushHistory(); boxes[sel][0] = i; changed(); } renderClasses(); updateHud(); draw(); }
+  function editable() { return !!item && !loading && !destroyed; }
+  function setActiveClass(i) { activeCls = i; if (sel >= 0 && boxes[sel] && boxes[sel][0] !== i && editable()) { pushHistory(); boxes[sel][0] = i; changed(); } renderClasses(); updateHud(); draw(); }
+  /** Change the palette only — never a box. */
+  function setPalette(i) { activeCls = i; renderClasses(); updateHud(); draw(); }
   async function addClass(name) {
     names.push(name);
     try { await fovea.api.patch(`/api/datasets/${ds.id}`, { classes: names }); await refresh(); ui.toast(`Added class ${names.length - 1}: ${name}`, { type: 'ok' }); }
@@ -235,7 +251,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   // ---------------------------------------------------------------- mouse
   const local = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
   canvas.addEventListener('mousedown', (e) => {
-    if (!img) return; const p = local(e); mouse = { ...p, inside: true };
+    if (!img || loading) return; const p = local(e); mouse = { ...p, inside: true };
     if (e.button === 1 || spaceDown || tool === 'pan') { drag = { kind: 'pan', x0: p.x, y0: p.y, tx0: tx, ty0: ty }; e.preventDefault(); canvas.style.cursor = 'grabbing'; return; }
     if (e.button !== 0) return;
     const hn = handleAt(p.x, p.y);
@@ -269,7 +285,12 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
       if (hn.includes('w')) x0 = c.x; if (hn.includes('e')) x1 = c.x; if (hn.includes('n')) y0 = c.y; if (hn.includes('s')) y1 = c.y;
       if (x0 > x1) [x0, x1] = [x1, x0]; if (y0 > y1) [y0, y1] = [y1, y0];
       x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(iw, x1); y1 = Math.min(ih, y1);
-      boxes[sel] = [o[0], (x0 + x1) / 2 / iw, (y0 + y1) / 2 / ih, Math.max(1, x1 - x0) / iw, Math.max(1, y1 - y0) / ih]; draw();
+      // Collapsing a handle onto the opposite edge used to leave a 1-px box whose centre was computed
+      // from different edges than its width — half of it outside the image. Keep a floor inside the frame.
+      const mw = Math.min(iw, 2), mh = Math.min(ih, 2);
+      if (x1 - x0 < mw) { if (x0 + mw <= iw) x1 = x0 + mw; else x0 = x1 - mw; }
+      if (y1 - y0 < mh) { if (y0 + mh <= ih) y1 = y0 + mh; else y0 = y1 - mh; }
+      boxes[sel] = [o[0], (x0 + x1) / 2 / iw, (y0 + y1) / 2 / ih, (x1 - x0) / iw, (y1 - y0) / ih, ...o.slice(5)]; draw();
     }
   }
   window.addEventListener('mouseup', onUp);
@@ -290,76 +311,227 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     if (tool === 'point' && !e.ctrlKey && !e.metaKey) { const d = e.deltaY > 0 ? -0.01 : 0.01; if (e.shiftKey) opts.pointH = Math.max(0.02, Math.min(0.9, opts.pointH + d)); else opts.pointW = Math.max(0.02, Math.min(0.6, opts.pointW + d)); renderPointOpts(); draw(); return; }
     const p = local(e); zoomAt(p.x, p.y, Math.exp(-e.deltaY * 0.0022));
   }, { passive: false });
-  canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); const p = local(e); const hit = boxAt(p.x, p.y); if (hit < 0) return; sel = hit; renderBoxes(); draw();
-    ui.menu({ x: e.clientX, y: e.clientY }, [{ label: 'Change class', header: true }, ...names.slice(0, 20).map((n, i) => ({ label: `${i} · ${n}`, icon: i === boxes[hit][0] ? 'check' : 'tag', onClick: () => { pushHistory(); boxes[hit][0] = i; changed(); } })), { sep: true }, { label: 'Delete box', icon: 'trash', danger: true, onClick: () => { pushHistory(); boxes.splice(hit, 1); sel = -1; changed(); } }]); });
+  canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); if (loading) return; const p = local(e); const hit = boxAt(p.x, p.y); if (hit < 0) return; sel = hit; renderBoxes(); draw();
+    ui.menu({ x: e.clientX, y: e.clientY }, [{ label: 'Change class', header: true }, ...names.slice(0, 20).map((n, i) => ({ label: `${i} · ${n}`, icon: i === boxes[hit][0] ? 'check' : 'tag', onClick: () => { if (!editable() || !boxes[hit]) return; pushHistory(); boxes[hit][0] = i; changed(); } })), { sep: true }, { label: 'Delete box', icon: 'trash', danger: true, onClick: () => { if (!editable() || !boxes[hit]) return; pushHistory(); boxes.splice(hit, 1); sel = -1; changed(); } }]); });
   canvas.addEventListener('dblclick', (e) => { const p = local(e); if (boxAt(p.x, p.y) < 0) { fit(); draw(); } });
   const ro = new ResizeObserver(() => resizeCanvas()); ro.observe(stage);
 
   // ---------------------------------------------------------------- history & save
   function pushHistory() { undo.push(JSON.stringify(boxes)); if (undo.length > 60) undo.shift(); redo = []; }
-  function doUndo() { if (!undo.length) return; redo.push(JSON.stringify(boxes)); boxes = JSON.parse(undo.pop()); sel = Math.min(sel, boxes.length - 1); changed(false); }
-  function doRedo() { if (!redo.length) return; undo.push(JSON.stringify(boxes)); boxes = JSON.parse(redo.pop()); sel = Math.min(sel, boxes.length - 1); changed(false); }
-  function changed() { dirty = true; setSaveState('dirty'); renderBoxes(); draw(); clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 500); }
+  function doUndo() { if (!undo.length || !editable()) return; redo.push(JSON.stringify(boxes)); boxes = JSON.parse(undo.pop()); sel = Math.min(sel, boxes.length - 1); changed(false); }
+  function doRedo() { if (!redo.length || !editable()) return; undo.push(JSON.stringify(boxes)); boxes = JSON.parse(redo.pop()); sel = Math.min(sel, boxes.length - 1); changed(false); }
+  function changed() {
+    if (!editable()) return;          // backstop: nothing may be queued against an image that is still loading
+    dirty = true; setSaveState('dirty'); renderBoxes(); draw();
+    clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 500);
+  }
+  const labelUrl = (id) => `/api/datasets/${ds.id}/images/${id}/labels`;
+  const labelRows = (res) => (res.boxes || []).map((b, i) => {
+    const c = res.confs && res.confs[i];
+    return c != null ? [...b.slice(0, 5), c] : [...b.slice(0, 5)];   // keep a prediction file's confidence column
+  });
+
+  /**
+   * Persist `boxes` for the current image. Resolves true when what is on disk now matches what the user
+   * sees, false when it does not (failure, or a conflict the user has not resolved). Never throws.
+   */
   async function save(force = false) {
-    if (!item || (!dirty && !force) || saving) return;
-    const target = item, payload = boxes.map(b => [...b]);
+    if (!item || loading) return !dirty;
+    if (!dirty && !force) return true;
+    if (saving) return false;
+    if (conflictOpen) { lastOutcome = 'conflict'; return false; }
+    const target = item, payload = boxes.map(b => [...b]), base = version;
     saving = true; setSaveState('saving');
     try {
-      const res = await fovea.api.put(`/api/datasets/${ds.id}/images/${target.id}/labels`, { boxes: payload });
-      if (target === item) { dirty = JSON.stringify(payload) !== JSON.stringify(boxes); item = { ...item, ...res.item, boxes: undefined }; if (!dirty) setSaveState('saved'); }
-      cursor.update({ ...res.item, boxes: res.item.boxes });
+      const res = await fovea.api.put(labelUrl(target.id), { boxes: payload, base_version: base });
+      saveRetries = 0; lastOutcome = 'ok';
+      if (target === item) {
+        version = res.version ?? null;
+        const editedMeanwhile = JSON.stringify(payload) !== JSON.stringify(boxes);
+        const reconcile = res.rejected && !editedMeanwhile;
+        if (reconcile) {
+          // Only rows that cannot be stored at all are rejected; show exactly what is on disk.
+          boxes = (res.item.boxes || []).map(b => [...b]); sel = Math.min(sel, boxes.length - 1);
+          ui.toast(`${res.rejected} invalid box${res.rejected > 1 ? 'es were' : ' was'} not saved`, { type: 'error' });
+        }
+        dirty = editedMeanwhile;
+        Object.assign(item, res.item); delete item.boxes;     // keep identity: goTo's staleness checks rely on it
+        setSaveState(dirty ? 'dirty' : 'saved');
+        if (reconcile || !boxes.length) { renderBoxes(); draw(); }
+        renderInfo();
+      }
+      cursor.update({ ...res.item });
       fovea.bus.emit('labels:changed', { item: res.item });
-      if (res.item.classes.some(c => c >= names.length)) { const d = await refresh(); names = [...(d.classes || [])]; renderClasses(); }
-      renderInfo();
-      if (dirty) { clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 300); }
-    } catch (e) { setSaveState('error', 'Save failed — retrying'); ui.toast('Save failed: ' + e.message, { type: 'error' }); clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 3000); }
-    finally { saving = false; }
+      if (!destroyed && (res.item.classes || []).some(c => c >= names.length)) {
+        try { const d = await refresh(); names = [...(d.classes || [])]; renderClasses(); } catch (_) { /* palette refresh is cosmetic */ }
+      }
+      if (dirty && !destroyed && target === item) { clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 300); }
+      return true;
+    } catch (e) {
+      if (e.status === 409) {
+        lastOutcome = 'conflict';
+        if (target !== item) {
+          ui.toast(`Edits to ${target.rel_path.split('/').pop()} were not saved: the file was changed elsewhere`, { type: 'error', timeout: 8000 });
+          return false;
+        }
+        saving = false;
+        const choice = await resolveConflict(e);
+        if (choice === 'mine') return await save(true);
+        if (choice === 'theirs') { lastOutcome = 'ok'; return true; }
+        return false;
+      }
+      lastOutcome = 'error';
+      saveRetries++;
+      const giveUp = saveRetries >= 5 || destroyed || target !== item;
+      if (target === item) setSaveState('error', giveUp ? 'Save failed — not written' : 'Save failed — retrying');
+      if (Date.now() - lastFailToast > 8000) { lastFailToast = Date.now(); ui.toast('Save failed: ' + (e.message || 'network error'), { type: 'error' }); }
+      if (!giveUp) { clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), Math.min(20000, 1500 * 2 ** saveRetries)); }
+      return false;
+    } finally { saving = false; }
   }
-  async function flush() { clearTimeout(saveTimer); if (dirty) await save(true); while (saving) await new Promise(r => setTimeout(r, 30)); }
+
+  /** The file changed under this editor. Ask — never silently resurrect or erase someone else's boxes. */
+  function resolveConflict(err) {
+    if (conflictOpen) return Promise.resolve(null);
+    conflictOpen = true;
+    const d = (err.body && err.body.detail) || {};
+    const theirs = Array.isArray(d.boxes) ? d.boxes : [];
+    setSaveState('error', 'Conflict — not saved');
+    return new Promise((resolve) => {
+      let decided = null;
+      ui.modal({
+        title: 'Labels changed elsewhere',
+        body: h('div', { class: 'col gap-8' },
+          h('p', { style: 'margin:0' }, `${item ? item.rel_path.split('/').pop() : 'This image'} was modified outside this editor — in another tab, by a bulk operation, or by another tool.`),
+          h('p', { class: 'small muted', style: 'margin:0' }, `Your version: ${boxes.length} box${boxes.length === 1 ? '' : 'es'} · on disk now: ${theirs.length} box${theirs.length === 1 ? '' : 'es'}`)),
+        onClose: () => { conflictOpen = false; resolve(decided); },
+        footer: (api) => [
+          h('button', { class: 'btn', onClick: () => {
+            decided = 'theirs'; version = d.version ?? null;
+            boxes = theirs.map(b => [...b]); sel = -1; undo = []; redo = []; dirty = false;
+            setSaveState('saved'); renderBoxes(); draw(); api.close();
+          } }, 'Load theirs'),
+          h('button', { class: 'btn btn-primary', onClick: () => { decided = 'mine'; version = d.version ?? null; dirty = true; api.close(); } }, 'Keep mine'),
+        ],
+      });
+    });
+  }
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  /** Save until clean. Resolves 'clean', 'conflict' (a changed-elsewhere dialog is undecided) or 'failed'. */
+  async function flush() {
+    clearTimeout(saveTimer);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      while (saving) await sleep(25);
+      if (!dirty) return 'clean';
+      if (conflictOpen) return 'conflict';
+      if (await save(true)) continue;          // written — loop in case of edits made during the round trip
+      if (!dirty) return 'clean';
+      if (lastOutcome === 'conflict') return 'conflict';
+      if (attempt >= 1) return 'failed';
+      clearTimeout(saveTimer);                 // flush drives this one retry itself
+      await sleep(600);
+    }
+    return dirty ? 'failed' : 'clean';
+  }
+
+  /** Fire-and-forget write that outlives this view (tab switch, page unload). Still version-checked. */
+  function keepaliveSave(reason) {
+    if (!dirty || !item || loading || conflictOpen) return;
+    const name = item.rel_path.split('/').pop();
+    const body = { boxes: boxes.map(b => [...b]) };
+    // A save still in flight is our own and will move the file's mtime, so checking against the version
+    // we hold would reject these very edits. Otherwise the write stays version-checked.
+    if (!saving) body.base_version = version;
+    fetch(labelUrl(item.id), { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then((r) => {
+        if (r.ok) return;
+        const why = r.status === 409 ? 'the file was changed elsewhere' : `HTTP ${r.status}`;
+        if (reason !== 'unload') ui.toast(`Edits to ${name} were not saved (${why})`, { type: 'error', timeout: 8000 });
+      })
+      .catch(() => { if (reason !== 'unload') ui.toast(`Edits to ${name} were not saved`, { type: 'error', timeout: 8000 }); });
+    dirty = false;
+  }
 
   // ---------------------------------------------------------------- navigation
-  async function goTo(i) {
+  async function goTo(i, { reload = false } = {}) {
     if (cursor.total != null) i = Math.max(0, Math.min(cursor.total - 1, i));
-    if (i < 0) return;
+    if (i < 0 || destroyed) return;
+    if (i === idx && !reload && !loading) return;         // e.g. → on the last image must not wipe undo history
+    const my = ++navToken;
     stopAutoIfEnd(i);
-    await flush();
-    // "Propagate boxes to next unlabeled" means exactly that: stepping forward one frame. Jumping to
-    // a search hit, an index, a mark or "next unlabeled" must NOT stamp the current boxes onto a
-    // distant image — that silently writes a label file the user never looked at.
-    const isNextFrame = idx >= 0 && i === idx + 1;
-    const prevBoxes = isNextFrame ? boxes.map(b => [...b]) : [];
-    const it = await cursor.ensure(i);
-    if (!it) return;
-    idx = i; item = it; sel = -1; hover = -1; undo = []; redo = []; drag = null; dirty = false;
-    fovea.router.replaceQuery({ ...filters, sort: sort !== 'id' ? sort : null, order: order !== 'asc' ? order : null, img: it.id });
-    renderInfo(); setSaveState('saved');
-    stageMsg.textContent = ''; stageMsg.classList.add('hidden');
-    const [labels] = await Promise.all([fovea.api.get(`/api/datasets/${ds.id}/images/${it.id}/labels`).catch(() => ({ boxes: [] })), loadImage(it.id)]);
-    if (item !== it) return;
-    boxes = (labels.boxes || []).map(b => b.slice(0, 5));
-    // propagate: the next frame has no boxes (missing or empty label) → carry the previous ones over
-    if (!boxes.length && opts.propagate && prevBoxes.length) {
-      boxes = prevBoxes; dirty = true; setSaveState('dirty');
-      clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 400);
+    clearTimeout(classBufTimer); classBuf = ''; classBufSel = -1;
+    const flushed = await flush();
+    if (my !== navToken) return;
+    if (flushed === 'conflict') { stopAuto(); return; }   // the changed-elsewhere dialog decides; stay here
+    if (flushed === 'failed') {
+      stopAuto();
+      const name = item ? item.rel_path.split('/').pop() : 'this image';
+      const leave = await ui.confirm({ title: 'Changes not saved', message: `Your edits to ${name} could not be written. Leave this image and discard them?`, okLabel: 'Discard & continue', danger: true });
+      if (!leave || my !== navToken) return;
+      while (saving) await sleep(25);
+      if (my !== navToken) return;
+      dirty = false; clearTimeout(saveTimer);
     }
-    if (!(customView && prevDims && img && prevDims[0] === img.naturalWidth && prevDims[1] === img.naturalHeight)) fit();
-    prevDims = img ? [img.naturalWidth, img.naturalHeight] : null;
-    renderBoxes(); updateHud(); draw();
-    cursor.prefetch(idx, 4);
-    const nxt = cursor.items[idx + 1]; if (nxt) { const pre = new Image(); pre.src = fovea.api.imgUrl(nxt.id); }
+    // "Propagate boxes to next unlabeled" means exactly that: one step forward from an image whose boxes are
+    // on screen. Jumps (search hit, index, mark, next unlabeled) and steps taken while the previous image is
+    // still loading — its boxes are not the ones displayed — must not stamp boxes onto another image.
+    const isNextFrame = !reload && !loading && idx >= 0 && i === idx + 1;
+    const prevBoxes = isNextFrame ? boxes.map(b => [...b]) : [];
+    const wasLoading = loading;
+    let switched = false;
+    loading = true; drag = null;
+    try {
+      const it = await cursor.ensure(i);
+      if (my !== navToken) return;
+      if (!it) { loading = wasLoading; return; }
+      idx = i; item = it; switched = true;
+      sel = -1; hover = -1; undo = []; redo = []; dirty = false; saveRetries = 0; version = null;
+      fovea.router.replaceQuery({ ...filters, sort: sort !== 'id' ? sort : null, order: order !== 'asc' ? order : null, img: it.id });
+      renderInfo(); setSaveState('saved', 'Loading…');
+      let labelsError = null;
+      const [labels, loaded] = await Promise.all([
+        fovea.api.get(labelUrl(it.id)).catch((e) => { labelsError = e; return null; }),
+        loadImage(it.id),
+      ]);
+      if (my !== navToken) return;
+      // Swap pixels and boxes together: the new image must never be drawn under the previous image's boxes.
+      img = loaded;
+      stageMsg.textContent = img ? '' : 'Image file not found on disk — it may have been moved or deleted';
+      stageMsg.classList.toggle('hidden', !!img);
+      if (labelsError) {
+        // Showing "no boxes" would invite drawing over labels we merely failed to read: editing stays blocked.
+        boxes = [];
+        stageMsg.textContent = `Could not load this image's labels (${labelsError.message}). Editing is disabled — move away and back to retry.`;
+        stageMsg.classList.remove('hidden');
+        setSaveState('error', 'Labels not loaded');
+      } else {
+        version = labels.version ?? null;
+        boxes = labelRows(labels); sel = -1; hover = -1;
+        loading = false;
+        setSaveState('saved');
+        if (!boxes.length && opts.propagate && prevBoxes.length && img) {
+          boxes = prevBoxes; dirty = true; setSaveState('dirty');
+          clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 400);
+        }
+      }
+      if (!(customView && prevDims && img && prevDims[0] === img.naturalWidth && prevDims[1] === img.naturalHeight)) fit();
+      if (img) prevDims = [img.naturalWidth, img.naturalHeight];
+      renderBoxes(); updateHud(); draw();
+      cursor.prefetch(idx, 4);
+      const nxt = cursor.items[idx + 1]; if (nxt) { const pre = new Image(); pre.src = fovea.api.imgUrl(nxt.id); }
+    } catch (e) {
+      if (my !== navToken) return;
+      if (!switched) loading = wasLoading;                // still on the previous image, whose boxes are on screen
+      stageMsg.textContent = e.message; stageMsg.classList.remove('hidden');
+    }
   }
+  /** Resolves with the decoded image, or null when the file cannot be loaded. */
   function loadImage(id) {
     return new Promise((resolve) => {
       const im = new Image(); im.decoding = 'async';
-      im.onload = () => { img = im; resolve(); };
-      im.onerror = () => {
-        // Keep whatever labels the file still has — they are real data — but say plainly that the
-        // pixels are gone. Drawing is already blocked while `img` is null.
-        img = null;
-        stageMsg.textContent = 'Image file not found on disk — it may have been moved or deleted';
-        stageMsg.classList.remove('hidden');
-        resolve();
-      };
+      im.onload = () => resolve(im);
+      im.onerror = () => resolve(null);
       im.src = fovea.api.imgUrl(id);
     });
   }
@@ -374,8 +546,8 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     } catch (e) { ui.toast(e.message, { type: 'error' }); }
   }
   async function copyFromPrevious() {
-    if (idx <= 0) return; const prev = cursor.items[idx - 1]; if (!prev) return;
-    try { const { item: full } = await fovea.api.get(`/api/datasets/${ds.id}/images/${prev.id}`); if (!full.boxes.length) { ui.toast('Previous image has no boxes'); return; } pushHistory(); boxes = boxes.concat(full.boxes.map(b => b.slice(0, 5))); changed(); ui.toast(`Copied ${full.boxes.length} boxes from previous`, { timeout: 1200 }); }
+    if (idx <= 0 || !editable()) return; const prev = cursor.items[idx - 1]; if (!prev) return;
+    try { const { item: full } = await fovea.api.get(`/api/datasets/${ds.id}/images/${prev.id}`); if (!full.boxes.length) { ui.toast('Previous image has no boxes'); return; } if (!editable()) return; pushHistory(); boxes = boxes.concat(full.boxes.map(b => b.slice(0, 5))); changed(); ui.toast(`Copied ${full.boxes.length} boxes from previous`, { timeout: 1200 }); }
     catch (e) { ui.toast(e.message, { type: 'error' }); }
   }
   async function setReview(status) {
@@ -393,14 +565,14 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     if (!rangeStart || !item) return;
     const c = Number(rangeCls.value); const a = Math.min(rangeStart.idx, idx), b = Math.max(rangeStart.idx, idx);
     if (!await ui.confirm({ title: 'Apply class to range', message: `Set every box in images #${a + 1}–#${b + 1} (${b - a + 1} images) to class ${c} · ${className(names, c)}? This writes label files immediately.`, okLabel: 'Apply' })) return;
-    await flush();
+    if (await flush() !== 'clean') { ui.toast('The edits on this image are not saved yet — resolve that first', { type: 'error' }); return; }
     try {
       const ids = []; for (let i = a; i <= b; i++) { const it = await cursor.ensure(i); if (it) ids.push(it.id); }
       const res = await fovea.api.post(`/api/datasets/${ds.id}/labels/bulk`, { op: 'set_class', cls: c, image_ids: ids });
       if (res.job) { await fovea.api.watchJob(res.job.id); }
       ui.toast(`Range applied: ${res.images ?? ids.length} images`, { type: 'ok' });
       rangeStart = null; rangeApply.disabled = true; rangeStatus.textContent = 'No range start';
-      const cur = idx; idx = -1; await goTo(cur);
+      await goTo(idx, { reload: true });
       fovea.bus.emit('dataset:updated');
     } catch (e) { ui.toast(e.message, { type: 'error' }); }
   }
@@ -451,6 +623,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
       try {
         const res = await fovea.api.post('/api/ai/detect', { image_id: item.id, ...payloadBase() });
         const dets = res.detections.map(d => d.slice(0, 5));
+        if (!editable()) { progress.innerHTML = ''; return; }
         pushHistory();
         if (ai.mode === 'replace') boxes = dets; else if (ai.mode === 'fill') { if (!boxes.length) boxes = dets; else { ui.toast('Image already has boxes (fill mode) — nothing added'); undo.pop(); } } else boxes = boxes.concat(dets);
         changed(); progress.innerHTML = ''; ui.toast(`${dets.length} detections`, { type: 'ok', timeout: 1500 });
@@ -467,7 +640,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
       ), footer: (a) => [h('button', { class: 'btn', onClick: () => a.close() }, 'Cancel'), h('button', { class: 'btn btn-primary', onClick: async () => { a.close(); await runBatch(scope, n); } }, icon('sparkles', 13), 'Start')] });
     }
     async function runBatch(scope, n) {
-      await flush();
+      if (await flush() !== 'clean') { ui.toast('The edits on this image are not saved yet — resolve that first', { type: 'error' }); return; }
       let body = { dataset_id: ds.id, mode: ai.mode, ...payloadBase() };
       if (scope === 'next') { const ids = []; for (let i = idx; i < idx + n; i++) { const it = await cursor.ensure(i); if (!it) break; ids.push(it.id); } body.image_ids = ids; }
       else body.filters = filters;
@@ -477,14 +650,27 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
         progress.innerHTML = ''; progress.appendChild(h('div', { class: 'col gap-4' }, h('div', { class: 'row' }, txt, h('span', { class: 'spacer' }), h('button', { class: 'btn btn-ghost btn-sm', onClick: () => fovea.api.post(`/api/jobs/${job.id}/cancel`) }, 'Cancel')), bar));
         const snap = await fovea.api.watchJob(job.id, (s) => { txt.textContent = s.message; bar.firstChild.style.width = `${Math.round(s.progress * 100)}%`; });
         progress.innerHTML = ''; ui.toast(`Auto-label done: ${snap.result.images} images, ${snap.result.boxes} boxes`, { type: 'ok' });
-        const cur = idx; idx = -1; cursor.reset(); await goTo(cur); fovea.bus.emit('dataset:updated');
+        const cur = idx; cursor.reset(); await goTo(cur, { reload: true }); fovea.bus.emit('dataset:updated');
       } catch (e) { progress.innerHTML = ''; ui.toast('Auto-label failed: ' + e.message, { type: 'error' }); }
     }
   }
 
   // ---------------------------------------------------------------- tools & keys
   function setTool(t) { tool = t; Object.entries(toolBtns).forEach(([k, b]) => b.classList.toggle('active', k === t)); renderPointOpts(); updateHud(); draw(); if (mouse.inside) canvas.style.cursor = cursorFor(mouse.x, mouse.y); }
-  function applyClassBuf() { const n = parseInt(classBuf, 10); classBuf = ''; if (isNaN(n)) return; if (sel >= 0) { if (n !== boxes[sel][0]) { pushHistory(); boxes[sel][0] = n; changed(); } activeCls = n; renderClasses(); updateHud(); } else if (n < Math.max(1, names.length)) setActiveClass(n); }
+  /** Digits typed as a class id. Applied to the box that was selected when typing STARTED — if the
+      selection moved during the buffer window only the palette changes; no other box is touched. */
+  function applyClassBuf() {
+    const n = parseInt(classBuf, 10), forSel = classBufSel;
+    classBuf = ''; classBufSel = -1;
+    if (isNaN(n)) return;
+    const limit = Math.max(1, names.length);
+    if (n < 0 || n >= limit) {
+      ui.toast(`No class ${n} — this dataset has ${names.length} class${names.length === 1 ? '' : 'es'}. Add one in the Classes panel.`, { type: 'error', timeout: 2500 });
+      return;
+    }
+    if (forSel >= 0 && forSel === sel && boxes[sel] && editable() && boxes[sel][0] !== n) { pushHistory(); boxes[sel][0] = n; changed(); }
+    setPalette(n);
+  }
   const onKey = (e) => {
     if (destroyed || ui.hasModal()) return;
     if (isTyping()) { if (e.key === 'Escape') e.target.blur(); return; }
@@ -495,8 +681,16 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     if (mod) return;
     if (k === 'ArrowRight' && !e.altKey) { e.preventDefault(); stopAuto(); goTo(idx + 1); return; }
     if (k === 'ArrowLeft' && !e.altKey) { e.preventDefault(); stopAuto(); goTo(idx - 1); return; }
+    if (loading && k !== 'Escape' && k !== 'Home' && k !== 'End') return;   // navigation above still works
     if (e.altKey && k.startsWith('Arrow') && sel >= 0 && img) { e.preventDefault(); pushHistory(); const st = e.shiftKey ? 10 : 1; const b = boxes[sel]; if (k === 'ArrowLeft') b[1] -= st / img.naturalWidth; if (k === 'ArrowRight') b[1] += st / img.naturalWidth; if (k === 'ArrowUp') b[2] -= st / img.naturalHeight; if (k === 'ArrowDown') b[2] += st / img.naturalHeight; clampBox(b); changed(); return; }
-    if (k >= '0' && k <= '9') { e.preventDefault(); classBuf += k; clearTimeout(classBufTimer); if (names.length <= 10) applyClassBuf(); else classBufTimer = setTimeout(applyClassBuf, 550); return; }
+    if (k >= '0' && k <= '9') {
+      e.preventDefault();
+      if (e.repeat) return;                              // a held key must not build a 12-digit class id
+      if (!classBuf) classBufSel = sel;
+      classBuf += k; clearTimeout(classBufTimer);
+      if (names.length <= 10) applyClassBuf(); else classBufTimer = setTimeout(applyClassBuf, 550);
+      return;
+    }
     const shifted = e.shiftKey || (k.length === 1 && k !== k.toLowerCase() && k === k.toUpperCase());
     if (shifted && k.length === 1) {
       const up = k.toUpperCase();
@@ -512,8 +706,28 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
       case 'n': case 'N': nextUnlabeled(); break;
       case 'c': case 'C': copyFromPrevious(); break;
       case 'Delete': case 'Backspace': if (sel >= 0) { e.preventDefault(); pushHistory(); boxes.splice(sel, 1); sel = -1; changed(); } break;
-      case 'Escape': if (drag) { drag = null; draw(); } else if (sel >= 0) { sel = -1; renderBoxes(); draw(); } break;
-      case 'Tab': e.preventDefault(); if (boxes.length) { sel = e.shiftKey ? (sel - 1 + boxes.length) % boxes.length : (sel + 1) % boxes.length; renderBoxes(); draw(); } break;
+      case 'Escape':
+        if (drag) {
+          // A true cancel: put the box back where the drag started and drop the history entry for it.
+          if ((drag.kind === 'move' || drag.kind === 'resize') && sel >= 0 && drag.orig && boxes[sel]) {
+            boxes[sel] = [...drag.orig];
+            if (drag.kind === 'resize' || drag.pushed) undo.pop();
+          }
+          drag = null; renderBoxes(); draw();
+        } else if (sel >= 0) { sel = -1; renderBoxes(); draw(); }
+        break;
+      case 'Tab': {
+        // Over the canvas Tab cycles boxes. Elsewhere it does so only with a box already selected and focus not
+        // on a control — otherwise Tab has to move focus, or keyboard users are trapped on this page.
+        if (!boxes.length) return;
+        const f = document.activeElement;
+        const onControl = f && f !== document.body && !canvas.contains(f);
+        if (!mouse.inside && (onControl || sel < 0)) return;
+        e.preventDefault();
+        sel = e.shiftKey ? (sel - 1 + boxes.length) % boxes.length : (sel + 1) % boxes.length;
+        renderBoxes(); draw();
+        break;
+      }
       case 'Home': e.preventDefault(); goTo(0); break;
       case 'End': e.preventDefault(); goTo((cursor.total || 1) - 1); break;
       case '[': setActiveClass(Math.max(0, activeCls - 1)); break;
@@ -523,7 +737,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   };
   const onKeyUp = (e) => { if (e.key === ' ') { spaceDown = false; if (mouse.inside) canvas.style.cursor = cursorFor(mouse.x, mouse.y); } };
   document.addEventListener('keydown', onKey); document.addEventListener('keyup', onKeyUp);
-  const onUnload = () => { if (dirty && item) { navigator.sendBeacon && fetch(`/api/datasets/${ds.id}/images/${item.id}/labels`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ boxes }), keepalive: true }); } };
+  const onUnload = () => keepaliveSave('unload');
   window.addEventListener('beforeunload', onUnload);
 
   // ---------------------------------------------------------------- boot
@@ -537,8 +751,10 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   resizeCanvas();
 
   return () => {
-    destroyed = true; clearTimeout(saveTimer); stopAuto();
-    if (dirty) save(true);
+    destroyed = true; clearTimeout(saveTimer); clearTimeout(classBufTimer); stopAuto();
+    // Let an in-flight save land first (it updates `version`), then write whatever is still pending.
+    const finalSave = () => { if (saving) { setTimeout(finalSave, 30); return; } keepaliveSave('leave'); };
+    finalSave();
     document.removeEventListener('keydown', onKey); document.removeEventListener('keyup', onKeyUp);
     window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); window.removeEventListener('beforeunload', onUnload);
     ro.disconnect();
