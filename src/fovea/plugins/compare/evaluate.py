@@ -32,9 +32,11 @@ def load_preds(pred_dir: Path, rel_path: str, split: str, conf_thr: float) -> Li
     boxes, confs, _ = read_label_file(p)
     out = []
     for b, c in zip(boxes, confs):
+        # Row: cls, xc, yc, w, h, conf, has_conf. A 5-column file has no scores: it is kept at 1.0 so matching
+        # still works, but has_conf=False tells the summary that ranking-based metrics (AP) mean nothing.
         conf = 1.0 if c is None else c
         if conf >= conf_thr:
-            out.append([int(b[0]), b[1], b[2], b[3], b[4], conf])
+            out.append([int(b[0]), b[1], b[2], b[3], b[4], conf, c is not None])
     return out
 
 
@@ -88,6 +90,8 @@ class SideAcc:
         self.tp = defaultdict(int); self.fp = defaultdict(int); self.fn = defaultdict(int)
         self.records: Dict[int, List[Tuple[float, bool]]] = defaultdict(list)
         self.n_gt = defaultdict(int)
+        self.with_conf = 0
+        self.without_conf = 0
 
     def add(self, gt, preds, pred_tp, gt_matched):
         for g, m in zip(gt, gt_matched):
@@ -95,6 +99,10 @@ class SideAcc:
             if m == -1:
                 self.fn[c] += 1
         for p, ok in zip(preds, pred_tp):
+            if len(p) > 6 and not p[6]:
+                self.without_conf += 1
+            else:
+                self.with_conf += 1
             c = int(p[0])
             if ok:
                 self.tp[c] += 1
@@ -103,6 +111,9 @@ class SideAcc:
             self.records[c].append((p[5], ok))
 
     def summary(self, names: List[str]) -> dict:
+        # AP ranks predictions by confidence. Without scores every prediction ties, the curve's order is
+        # arbitrary and the number is not a metric — report it as unavailable rather than a plausible lie.
+        ranked = self.without_conf == 0
         classes = sorted(set(self.n_gt) | set(self.tp) | set(self.fp))
         rows, aps = [], []
         T = F = N = 0
@@ -116,12 +127,14 @@ class SideAcc:
             if self.n_gt[c] > 0:
                 aps.append(ap)
             rows.append({"cls": c, "name": names[c] if 0 <= c < len(names) else f"class_{c}", "gt": self.n_gt[c],
-                         "tp": tp, "fp": fp, "fn": fn, "precision": round(prec, 4), "recall": round(rec, 4), "f1": round(f1, 4), "ap": round(ap, 4)})
+                         "tp": tp, "fp": fp, "fn": fn, "precision": round(prec, 4), "recall": round(rec, 4), "f1": round(f1, 4),
+                         "ap": round(ap, 4) if ranked else None})
         prec = T / (T + F) if T + F else 0.0
         rec = T / (T + N) if T + N else 0.0
         f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
-        return {"classes": rows, "overall": {"gt": T + N, "tp": T, "fp": F, "fn": N, "precision": round(prec, 4), "recall": round(rec, 4), "f1": round(f1, 4),
-                                             "map50": round(sum(aps) / len(aps), 4) if aps else 0.0}}
+        return {"classes": rows, "conf_available": ranked, "preds_without_conf": self.without_conf,
+                "overall": {"gt": T + N, "tp": T, "fp": F, "fn": N, "precision": round(prec, 4), "recall": round(rec, 4), "f1": round(f1, 4),
+                            "map50": (round(sum(aps) / len(aps), 4) if aps else 0.0) if ranked else None}}
 
 
 def gt_boxes_for(image_id: int) -> List[List[float]]:
@@ -169,7 +182,7 @@ def image_detail(image_id: int, rel_path: str, split: str, pred_a: Path, pred_b:
             continue
         preds = load_preds(pdir, rel_path, split, conf_thr)
         pred_tp, gt_matched = match_image(gt, preds, iou_thr)
-        out[side] = {"preds": [{"box": p[:5], "conf": p[5], "tp": ok} for p, ok in zip(preds, pred_tp)],
+        out[side] = {"preds": [{"box": p[:5], "conf": p[5] if p[6] else None, "tp": ok} for p, ok in zip(preds, pred_tp)],
                      "gt_matched": gt_matched, "file": str(pred_file_for(pdir, rel_path, split) or "")}
     return out
 

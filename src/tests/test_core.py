@@ -924,3 +924,23 @@ def test_loose_images_beside_split_folders_keep_the_splits(tmp_path):
         assert doc["train"] == "images/train" and doc["val"] == "images/val", "loose files never widen a split entry"
     finally:
         _drop(ds_id)
+
+
+def test_compare_does_not_invent_ap_for_predictions_without_confidence(tmp_path):
+    from fovea.plugins.compare.evaluate import SideAcc, load_preds, match_image
+
+    preds_dir = tmp_path / "p"; preds_dir.mkdir()
+    gt = [[0, 0.5, 0.5, 0.2, 0.2]]
+    for name, text in (("plain", "0 0.5 0.5 0.2 0.2\n0 0.1 0.1 0.1 0.1\n"), ("scored", "0 0.5 0.5 0.2 0.2 0.9\n0 0.1 0.1 0.1 0.1 0.3\n")):
+        (preds_dir / f"{name}.txt").write_text(text)
+    summaries = {}
+    for name in ("plain", "scored"):
+        acc = SideAcc()
+        preds = load_preds(preds_dir, f"{name}.jpg", "", 0.0)
+        tp, gm = match_image(gt, preds, 0.5)
+        acc.add(gt, preds, tp, gm)
+        summaries[name] = acc.summary(["c0"])
+    assert summaries["plain"]["conf_available"] is False and summaries["plain"]["overall"]["map50"] is None
+    assert summaries["plain"]["classes"][0]["ap"] is None and summaries["plain"]["overall"]["precision"] == 0.5
+    assert summaries["scored"]["conf_available"] is True and summaries["scored"]["overall"]["map50"] == 1.0
+

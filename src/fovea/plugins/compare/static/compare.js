@@ -74,35 +74,39 @@ async function render(el, { ctx, dataset, fovea }, F, API) {
     const { evals } = await F.api.get(`${API}/evals`, { dataset_id: ds.id });
     savedList.innerHTML = '';
     if (!evals.length) savedList.appendChild(h('span', { class: 'small faint' }, 'none yet'));
-    evals.forEach(ev => savedList.appendChild(ui.chip(`${ev.name} · mAP ${(ev.summary.a.overall.map50 * 100).toFixed(1)}`, { cls: current && current.id === ev.id ? 'accent' : 'outline', icon: 'gitCompare', onClick: () => loadEval(ev.id),
+    const mapText = (ev) => { const m = ev.summary && ev.summary.a && ev.summary.a.overall.map50; return m == null ? 'mAP n/a' : `mAP ${(m * 100).toFixed(1)}`; };
+    evals.forEach(ev => savedList.appendChild(ui.chip(`${ev.name} · ${mapText(ev)}`, { cls: current && current.id === ev.id ? 'accent' : 'outline', icon: 'gitCompare', onClick: () => loadEval(ev.id),
       onRemove: async () => { if (await ui.confirm({ title: 'Delete evaluation?', message: ev.name, okLabel: 'Delete', danger: true })) { await F.api.del(`${API}/evals/${ev.id}?dataset_id=${ds.id}`); if (current && current.id === ev.id) { current = null; results.innerHTML = ''; } loadSaved(); } } })));
   }
 
   // ------------------------------------------------------------ results
   let errorsOnly = true;
+  const PAGE = 500;
   async function loadEval(id) {
     results.innerHTML = ''; results.appendChild(h('div', { class: 'row', style: 'padding:20px;justify-content:center' }, ui.spinner()));
-    try { current = (await F.api.get(`${API}/evals/${id}`, { dataset_id: ds.id, errors_only: errorsOnly ? 1 : 0, limit: 500 })).eval; }
+    try { current = (await F.api.get(`${API}/evals/${id}`, { dataset_id: ds.id, errors_only: errorsOnly ? 1 : 0, limit: PAGE })).eval; }
     catch (e) { results.innerHTML = ''; results.appendChild(h('div', { class: 'callout danger' }, e.message)); return; }
     F.router.replaceQuery({ eval: id });
     loadSaved();
     drawResults();
   }
-  function pct(v) { return (v * 100).toFixed(1) + '%'; }
+  function pct(v) { return v == null ? 'n/a' : (v * 100).toFixed(1) + '%'; }
   function drawResults() {
     const ev = current; const hasB = !!ev.summary.b;
     results.innerHTML = '';
     results.appendChild(h('div', { class: 'row mb-12' }, h('h2', { style: 'margin:0;font-size:15px' }, ev.name), h('span', { class: 'small faint' }, `${fmt.num(ev.images)} images · pred files A ${fmt.num(ev.pred_files.a)}${hasB ? ` · B ${fmt.num(ev.pred_files.b)}` : ''}`), h('span', { class: 'spacer' }),
       h('button', { class: 'btn btn-sm', onClick: () => window.open(`${API}/evals/${ev.id}?dataset_id=${ds.id}&limit=100000`, '_blank') }, icon('download', 12), 'JSON')));
-    const tiles = (side, label) => { const o = ev.summary[side].overall; return h('div', { class: 'card', style: 'flex:1' }, h('div', { class: 'card-header' }, h('h3', label), h('span', { class: 'sub mono' }, side === 'a' ? ev.pred_a_host : ev.pred_b_host)), h('div', { class: 'card-body' }, h('div', { class: 'stat-grid' },
-      ui.statTile({ label: 'mAP@' + ev.iou, value: pct(o.map50) }), ui.statTile({ label: 'Precision', value: pct(o.precision), sub: `${fmt.num(o.tp)} TP · ${fmt.num(o.fp)} FP` }), ui.statTile({ label: 'Recall', value: pct(o.recall), sub: `${fmt.num(o.fn)} FN of ${fmt.num(o.gt)} GT` }), ui.statTile({ label: 'F1', value: pct(o.f1) })))); };
+    const tiles = (side, label) => { const sm = ev.summary[side]; const o = sm.overall; const noConf = sm.conf_available === false; return h('div', { class: 'card', style: 'flex:1' }, h('div', { class: 'card-header' }, h('h3', label), h('span', { class: 'sub mono' }, side === 'a' ? ev.pred_a_host : ev.pred_b_host)), h('div', { class: 'card-body' },
+      noConf ? h('div', { class: 'callout small mb-8' }, icon('info', 14), h('span', `${fmt.num(sm.preds_without_conf)} predictions have no confidence column: AP/mAP need ranked scores and are not reported, and the conf threshold cannot filter them.`)) : null,
+      h('div', { class: 'stat-grid' },
+      ui.statTile({ label: 'mAP@' + ev.iou, value: pct(o.map50), sub: noConf ? 'needs confidences' : null }), ui.statTile({ label: 'Precision', value: pct(o.precision), sub: `${fmt.num(o.tp)} TP · ${fmt.num(o.fp)} FP` }), ui.statTile({ label: 'Recall', value: pct(o.recall), sub: `${fmt.num(o.fn)} FN of ${fmt.num(o.gt)} GT` }), ui.statTile({ label: 'F1', value: pct(o.f1) })))); };
     results.appendChild(h('div', { class: 'row gap-12 mb-16', style: 'align-items:stretch' }, tiles('a', 'Model A'), hasB ? tiles('b', 'Model B') : null));
     // per class table
     const clsRows = new Map();
     ev.summary.a.classes.forEach(c => clsRows.set(c.cls, { a: c }));
     if (hasB) ev.summary.b.classes.forEach(c => clsRows.set(c.cls, { ...(clsRows.get(c.cls) || {}), b: c }));
-    const cell = (c, k, isPct = true) => c ? h('td', { class: 'num' }, isPct ? pct(c[k]) : fmt.num(c[k])) : h('td', { class: 'num faint' }, '–');
-    const delta = (a, b, k) => { if (!a || !b) return h('td'); const d = (b[k] - a[k]) * 100; return h('td', { class: 'num', style: `color:${d > 0 ? 'var(--ok)' : d < 0 ? 'var(--danger)' : 'var(--text-3)'}` }, (d > 0 ? '+' : '') + d.toFixed(1)); };
+    const cell = (c, k, isPct = true) => c ? h('td', { class: cls('num', c[k] == null && 'faint') }, isPct ? pct(c[k]) : fmt.num(c[k])) : h('td', { class: 'num faint' }, '–');
+    const delta = (a, b, k) => { if (!a || !b || a[k] == null || b[k] == null) return h('td'); const d = (b[k] - a[k]) * 100; return h('td', { class: 'num', style: `color:${d > 0 ? 'var(--ok)' : d < 0 ? 'var(--danger)' : 'var(--text-3)'}` }, (d > 0 ? '+' : '') + d.toFixed(1)); };
     results.appendChild(h('div', { class: 'card mb-16' }, h('div', { class: 'card-header' }, h('h3', 'Per class')), h('div', { class: 'card-body tight', style: 'overflow-x:auto' }, h('table', { class: 'table' },
       h('thead', h('tr', h('th', 'Class'), h('th', { class: 'right' }, 'GT'), h('th', { class: 'right' }, 'A · AP'), h('th', { class: 'right' }, 'A · P'), h('th', { class: 'right' }, 'A · R'), h('th', { class: 'right' }, 'A · FP'), h('th', { class: 'right' }, 'A · FN'),
         hasB ? [h('th', { class: 'right' }, 'B · AP'), h('th', { class: 'right' }, 'B · P'), h('th', { class: 'right' }, 'B · R'), h('th', { class: 'right' }, 'B · FP'), h('th', { class: 'right' }, 'B · FN'), h('th', { class: 'right' }, 'Δ AP')] : null)),
@@ -118,9 +122,25 @@ async function render(el, { ctx, dataset, fovea }, F, API) {
     const errCell = (s) => s ? h('td', { class: 'num' }, h('span', { style: 'color:var(--ok)' }, s.tp), ' / ', h('span', { style: `color:${s.fp ? 'var(--danger)' : 'inherit'}` }, s.fp), ' / ', h('span', { style: `color:${s.fn ? 'var(--warn)' : 'inherit'}` }, s.fn)) : h('td', '–');
     tbl.appendChild(h('thead', h('tr', h('th', 'Image'), h('th', 'Split'), h('th', { class: 'right' }, 'GT'), h('th', { class: 'right' }, 'A · TP / FP / FN'), hasB ? h('th', { class: 'right' }, 'B · TP / FP / FN') : null)));
     tbl.appendChild(rowsBody); drawRows();
-    results.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-header' }, h('h3', 'Per image'), h('span', { class: 'sub' }, `${fmt.num(ev.rows_total)} rows, worst first`), h('span', { class: 'spacer' }),
+    // The table is paged: say how much is shown, and let the user fetch the rest in place.
+    const shownEl = h('span', { class: 'sub' });
+    const moreBox = h('div', { class: 'row', style: 'justify-content:center;padding:10px' });
+    const syncMore = () => {
+      shownEl.textContent = `${fmt.num(ev.rows.length)} of ${fmt.num(ev.rows_total)} rows, worst first${!errorsOnly && ev.rows_total < ev.images ? ' · per-image list capped at 20,000' : ''}`;
+      moreBox.innerHTML = '';
+      if (ev.rows.length < ev.rows_total) moreBox.appendChild(h('button', { class: 'btn btn-sm', onClick: async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          const next = (await F.api.get(`${API}/evals/${ev.id}`, { dataset_id: ds.id, errors_only: errorsOnly ? 1 : 0, limit: PAGE, offset: ev.rows.length })).eval;
+          if (current !== ev) return;
+          ev.rows.push(...next.rows); ev.rows_total = next.rows_total; drawRows(); syncMore();
+        } catch (err) { ui.toast(err.message, { type: 'error' }); syncMore(); }
+      } }, `Load ${fmt.num(Math.min(PAGE, ev.rows_total - ev.rows.length))} more`));
+    };
+    syncMore();
+    results.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-header' }, h('h3', 'Per image'), shownEl, h('span', { class: 'spacer' }),
       h('label', { class: 'check small' }, h('input', { type: 'checkbox', checked: errorsOnly, onChange: async (e) => { errorsOnly = e.target.checked; await loadEval(ev.id); } }), 'errors only')),
-      h('div', { class: 'card-body tight', style: 'overflow:auto;max-height:60vh' }, ev.rows.length ? tbl : h('div', { class: 'empty' }, h('p', 'No rows')))));
+      h('div', { class: 'card-body tight', style: 'overflow:auto;max-height:60vh' }, ev.rows.length ? [tbl, moreBox] : h('div', { class: 'empty' }, h('p', 'No rows')))));
   }
 
   // ------------------------------------------------------------ side-by-side viewer
@@ -154,7 +174,7 @@ async function render(el, { ctx, dataset, fovea }, F, API) {
         pic.appendChild(img);
         const boxes = [], styles = [];
         if (layers.gt) detail.detail.gt.forEach((g, gi) => { boxes.push(g); styles.push({ color: d && d.gt_matched[gi] === -1 ? '#f59e0b' : '#22c55e', label: `GT ${className(names, g[0])}${d && d.gt_matched[gi] === -1 ? ' · FN' : ''}`, fill: 'transparent' }); });
-        if (layers.pred && d) d.preds.forEach(p => { boxes.push(p.box); styles.push({ color: p.tp ? '#3b82f6' : '#ef4444', dashed: true, label: `${p.tp ? 'TP' : 'FP'} ${className(names, p.box[0])} ${p.conf.toFixed(2)}`, fill: 'transparent' }); });
+        if (layers.pred && d) d.preds.forEach(p => { boxes.push(p.box); styles.push({ color: p.tp ? '#3b82f6' : '#ef4444', dashed: true, label: `${p.tp ? 'TP' : 'FP'} ${className(names, p.box[0])}${p.conf != null ? ' ' + p.conf.toFixed(2) : ''}`, fill: 'transparent' }); });
         pic.appendChild(F.boxLayer(boxes, { names, labels: layers.labels, stroke: 2, styleFor: (b, k) => styles[k] }));
         stage.appendChild(pic); panel.appendChild(stage); stageWrap.appendChild(panel);
         panel._img = img; panel._boxes = boxes; panel._styles = styles; panel._side = side; panel._s = s;
