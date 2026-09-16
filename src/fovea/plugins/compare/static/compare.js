@@ -62,8 +62,10 @@ async function render(el, { ctx, dataset, fovea }, F, API) {
       const { job, eval_id } = await F.api.post(`${API}/evaluate`, { dataset_id: ds.id, pred_a: setup.pred_a, pred_b: setup.pred_b || null, iou: setup.iou, conf: setup.conf, filters: setup.split ? { split: setup.split } : {} });
       const bar = ui.progress(0); const txt = h('span', { class: 'small muted' }, 'Queued…');
       progress.innerHTML = ''; progress.appendChild(h('div', { class: 'col gap-4' }, txt, bar));
-      await F.api.watchJob(job.id, s => { txt.textContent = s.message; bar.firstChild.style.width = `${Math.round(s.progress * 100)}%`; });
-      progress.innerHTML = ''; ui.toast('Evaluation finished', { type: 'ok' });
+      const snap = await F.api.watchJob(job.id, s => { txt.textContent = s.message; bar.firstChild.style.width = `${Math.round(s.progress * 100)}%`; });
+      progress.innerHTML = '';
+      if (snap.status === 'cancelled') { ui.toast('Evaluation cancelled'); return; }
+      ui.toast('Evaluation finished', { type: 'ok' });
       await loadSaved(); await loadEval(eval_id);
     } catch (e) { progress.innerHTML = ''; ui.toast(e.message, { type: 'error' }); }
     finally { runBtn.disabled = false; }

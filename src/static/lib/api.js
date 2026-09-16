@@ -38,18 +38,28 @@ export const imgUrl = (id) => `/api/img/${id}`;
 export const thumbUrl = (id, s = 256) => `/api/thumb/${id}?s=${s}`;
 export { qs };
 
-/** Follow a background job via SSE (polling fallback). Resolves with the final snapshot. */
+/**
+ * Follow a background job via SSE (polling fallback).
+ * Resolves with the final snapshot for 'done' AND 'cancelled' — check snap.status: a cancelled job may
+ * already have written part of its work, and snap.result is null. Rejects when the job errors.
+ * The promise carries stop(): close the stream without settling, for views that unmount mid-job.
+ */
 export function watchJob(jobId, onUpdate) {
-  return new Promise((resolve, reject) => {
-    let done = false;
-    const finish = (snap) => { if (done) return; done = true; if (snap.status === 'error') reject(new Error(snap.error || 'Job failed')); else resolve(snap); };
-    let es;
+  let es = null, done = false;
+  const TERMINAL = ['done', 'error', 'cancelled'];
+  const p = new Promise((resolve, reject) => {
+    const finish = (snap) => {
+      if (done) return;
+      done = true; if (es) es.close();
+      if (snap.status === 'error') reject(new Error(snap.error || 'Job failed')); else resolve(snap);
+    };
     const poll = async () => {
       try {
         while (!done) {
           const { job } = await get(`/api/jobs/${jobId}`);
+          if (done) return;
           onUpdate && onUpdate(job);
-          if (['done', 'error', 'cancelled'].includes(job.status)) { finish(job); return; }
+          if (TERMINAL.includes(job.status)) { finish(job); return; }
           await new Promise(r => setTimeout(r, 700));
         }
       } catch (e) { if (!done) { done = true; reject(e); } }
@@ -57,12 +67,15 @@ export function watchJob(jobId, onUpdate) {
     try {
       es = new EventSource(`/api/jobs/${jobId}/events`);
       es.onmessage = (ev) => {
+        if (done) return;
         const snap = JSON.parse(ev.data);
-        if (snap.status === 'missing') { es.close(); finish({ status: 'error', error: 'Job not found' }); return; }
+        if (snap.status === 'missing') { finish({ status: 'error', error: 'Job not found' }); return; }
         onUpdate && onUpdate(snap);
-        if (['done', 'error', 'cancelled'].includes(snap.status)) { es.close(); finish(snap); }
+        if (TERMINAL.includes(snap.status)) finish(snap);
       };
       es.onerror = () => { es.close(); if (!done) poll(); };
     } catch (e) { poll(); }
   });
+  p.stop = () => { done = true; if (es) es.close(); };
+  return p;
 }

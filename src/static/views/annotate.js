@@ -570,8 +570,10 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     try {
       const ids = []; for (let i = a; i <= b; i++) { const it = await cursor.ensure(i); if (it) ids.push(it.id); }
       const res = await fovea.api.post(`/api/datasets/${ds.id}/labels/bulk`, { op: 'set_class', cls: c, image_ids: ids });
-      if (res.job) { await fovea.api.watchJob(res.job.id); }
-      ui.toast(`Range applied: ${res.images ?? ids.length} images`, { type: 'ok' });
+      let cancelled = false;
+      if (res.job) { const snap = await fovea.api.watchJob(res.job.id); cancelled = snap.status === 'cancelled'; }
+      if (cancelled) ui.toast('Range edit cancelled — images processed before the cancel were changed');
+      else ui.toast(`Range applied: ${res.images ?? ids.length} images`, { type: 'ok' });
       rangeStart = null; rangeApply.disabled = true; rangeStatus.textContent = 'No range start';
       await goTo(idx, { reload: true });
       fovea.bus.emit('dataset:updated');
@@ -650,7 +652,9 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
         const bar = ui.progress(0); const txt = h('span', { class: 'xs muted' }, 'Queued…');
         progress.innerHTML = ''; progress.appendChild(h('div', { class: 'col gap-4' }, h('div', { class: 'row' }, txt, h('span', { class: 'spacer' }), h('button', { class: 'btn btn-ghost btn-sm', onClick: () => fovea.api.post(`/api/jobs/${job.id}/cancel`) }, 'Cancel')), bar));
         const snap = await fovea.api.watchJob(job.id, (s) => { txt.textContent = s.message; bar.firstChild.style.width = `${Math.round(s.progress * 100)}%`; });
-        progress.innerHTML = ''; ui.toast(`Auto-label done: ${snap.result.images} images, ${snap.result.boxes} boxes`, { type: 'ok' });
+        progress.innerHTML = '';
+        if (snap.status === 'cancelled') ui.toast('Auto-label cancelled — images labeled before the cancel keep their boxes');
+        else ui.toast(`Auto-label done: ${snap.result.images} images, ${snap.result.boxes} boxes`, { type: 'ok' });
         const cur = idx; cursor.reset(); await goTo(cur, { reload: true }); fovea.bus.emit('dataset:updated');
       } catch (e) { progress.innerHTML = ''; ui.toast('Auto-label failed: ' + e.message, { type: 'error' }); }
     }

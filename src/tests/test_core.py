@@ -679,3 +679,16 @@ def test_dataset_files_are_never_served_as_active_content(tmp_path):
         assert img.headers["content-type"] == "image/jpeg"
     finally:
         _drop(ds_id)
+
+
+def test_job_event_stream_ends_with_the_terminal_snapshot():
+    import json as _json
+    from fastapi.testclient import TestClient
+    from fovea.jobs import jobs
+    from fovea.main import app
+
+    job = jobs.submit("test", lambda j: {"ok": 1})
+    c = TestClient(app)
+    with c.stream("GET", f"/api/jobs/{job.id}/events") as r:
+        frames = [line[6:] for line in r.iter_lines() if line.startswith("data: ")]
+    assert _json.loads(frames[-1])["status"] == "done"

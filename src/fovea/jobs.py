@@ -7,7 +7,7 @@ import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class JobCancelled(Exception):
@@ -113,24 +113,6 @@ class JobManager:
             if j.status in ("queued", "running"):
                 return j
         return None
-
-    def events(self, job_id: str, interval: float = 0.25, timeout: float = 3600 * 6) -> Iterator[dict]:
-        """Yield job snapshots until the job reaches a terminal state."""
-        start = time.time()
-        last = None
-        while time.time() - start < timeout:
-            job = self.get(job_id)
-            if job is None:
-                yield {"status": "missing", "id": job_id}
-                return
-            snap = job.to_dict()
-            key = (snap["status"], snap["done"], snap["total"], snap["message"])
-            if key != last:
-                yield snap
-                last = key
-            if snap["status"] in ("done", "error", "cancelled"):
-                return
-            time.sleep(interval)
 
     def _gc(self, keep: int = 200) -> None:
         if len(self._jobs) <= keep:
