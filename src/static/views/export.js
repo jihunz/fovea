@@ -1,7 +1,7 @@
 // Export tab: subsets (zip / copy), review lists, data.yaml.
 export function install(fovea) { fovea.registerTab({ id: 'export', label: 'Export', icon: 'download', order: 50, render }); }
 
-async function render(el, { dataset, fovea }) {
+async function render(el, { dataset, fovea, refresh }) {
   const { h, icon, ui, fmt } = fovea;
   const { classColor } = fovea.colors;
   const ds = dataset; const names = ds.classes || [];
@@ -12,6 +12,10 @@ async function render(el, { dataset, fovea }) {
   // ------------------------------------------------------------ subset builder
   const f = { split: new Set((ds.splits || []).filter(Boolean)), cls: new Set(), only: false, labeled: '', excludeReview: new Set(['excluded']), includeUnlabeled: true, resize: 'none', max: 1280, w: 640, hh: 640, yaml: true };
   const countEl = h('div', { class: 'preview-count' }, '…');
+  const allSplits = (ds.splits || []).filter(Boolean);
+  // Unticking every split means "nothing", but the wire format cannot say that (an empty split filter
+  // means "any split") — so the UI must refuse, or it would export the whole dataset.
+  const noSplit = () => allSplits.length > 0 && f.split.size === 0;
   const filtersOf = () => {
     const o = {};
     if (f.split.size && f.split.size !== (ds.splits || []).filter(Boolean).length) o.split = [...f.split].join(',');
@@ -20,8 +24,20 @@ async function render(el, { dataset, fovea }) {
     if (f.excludeReview.size) o.exclude_review = [...f.excludeReview].join(',');
     return o;
   };
-  const refreshCount = fovea.debounce(async () => { try { const r = await fovea.api.get(`/api/datasets/${ds.id}/images`, { ...filtersOf(), limit: 1 }); countEl.textContent = `${fmt.num(r.total)} images`; } catch (e) { countEl.textContent = '?'; } }, 150);
-  const chk = (label, checked, on) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked, onChange: (e) => { on(e.target.checked); refreshCount(); } }), label);
+  const syncActions = () => { const off = noSplit(); zipBtn.disabled = off || zipBusy; copyBtn.disabled = off; };
+  const refreshCount = fovea.debounce(async () => {
+    syncActions();
+    if (noSplit()) { countEl.textContent = '0 images'; return; }
+    try {
+      // The count must describe exactly what the export writes, including "without labels" being off.
+      const r = await fovea.api.get(`/api/datasets/${ds.id}/images`, { ...filtersOf(), has_label: f.includeUnlabeled ? null : 1, limit: 1 });
+      countEl.textContent = `${fmt.num(r.total)} images`;
+    } catch (e) { countEl.textContent = '?'; }
+  }, 150);
+  const chk = (label, checked, on) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked, onChange: (e) => { on(e.target.checked); syncActions(); refreshCount(); } }), label);
+  let zipBusy = false;
+  const zipBtn = h('button', { class: 'btn', onClick: () => downloadZip() }, icon('download', 14), 'Download ZIP');
+  const copyBtn = h('button', { class: 'btn btn-primary', onClick: () => copyTo() }, icon('folderOpen', 14), 'Copy to folder…');
   const resizeOpts = h('div', { class: 'row wrap' });
   const renderResize = () => {
     resizeOpts.innerHTML = '';
@@ -41,21 +57,26 @@ async function render(el, { dataset, fovea }) {
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Resize'), resizeOpts, h('span', { class: 'hint' }, 'Normalized YOLO labels stay valid after resizing. Resized images are re-encoded as JPEG.')),
     h('div', { class: 'field' }, h('div', { class: 'row' }, chk('Write data.yaml', true, v => f.yaml = v))),
     h('div', { class: 'divider' }),
-    h('div', { class: 'row' }, countEl, h('span', { class: 'spacer' }),
-      h('button', { class: 'btn', onClick: () => downloadZip() }, icon('download', 14), 'Download ZIP'),
-      h('button', { class: 'btn btn-primary', onClick: () => copyTo() }, icon('folderOpen', 14), 'Copy to folder…')),
+    h('div', { class: 'row' }, countEl, h('span', { class: 'spacer' }), zipBtn, copyBtn),
     jobBox,
   ));
   grid.appendChild(subsetCard);
   refreshCount();
 
   async function downloadZip() {
-    const res = await fetch(`/api/datasets/${ds.id}/export/zip`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filters: filtersOf(), resize: resizeSpec(), include_unlabeled: f.includeUnlabeled, include_yaml: f.yaml }) });
-    if (!res.ok) { ui.toast('Export failed: ' + (await res.text()), { type: 'error' }); return; }
-    const blob = await res.blob(); const a = h('a', { href: URL.createObjectURL(blob), download: `${ds.id}-subset.zip` }); document.body.appendChild(a); a.click(); a.remove();
-    ui.toast(`ZIP ready (${fmt.bytes(blob.size)})`, { type: 'ok' });
+    if (zipBusy || noSplit()) return;
+    zipBusy = true; syncActions();
+    try {
+      // A one-time link the browser downloads natively: the archive streams to disk with the browser's own
+      // progress, instead of fetch() holding a multi-GB blob in this tab until the very end.
+      const { url } = await fovea.api.post(`/api/datasets/${ds.id}/export/zip-link`, { filters: filtersOf(), resize: resizeSpec(), include_unlabeled: f.includeUnlabeled, include_yaml: f.yaml, filename: `${ds.id}-subset` });
+      const a = h('a', { href: url, download: `${ds.id}-subset.zip` }); document.body.appendChild(a); a.click(); a.remove();
+      ui.toast('Download started — follow its progress in your browser\'s downloads', { type: 'ok', timeout: 5000 });
+    } catch (e) { ui.toast('Export failed: ' + e.message, { type: 'error' }); }
+    finally { setTimeout(() => { zipBusy = false; syncActions(); }, 3000); }   // one archive per click
   }
   async function copyTo() {
+    if (noSplit()) return;
     const parent = await fovea.pickPath({ title: 'Choose where to create the export folder', files: false, selectFiles: false });
     if (!parent) return;
     const name = await ui.prompt({ title: 'Export folder name', label: `Created inside ${parent}`, value: `${ds.id}-subset` });
@@ -92,19 +113,39 @@ async function render(el, { dataset, fovea }) {
     try {
       if (write) { const r = await fovea.api.post(`/api/datasets/${ds.id}/export/list`, { filters, style: lf.style, write: true, filename }); ui.toast(`Wrote ${r.lines} lines → ${r.path}`, { type: 'ok' }); return; }
       const res = await fetch(`/api/datasets/${ds.id}/export/list`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filters, style: lf.style, filename }) });
-      const blob = await res.blob(); const a = h('a', { href: URL.createObjectURL(blob), download: filename + '.txt' }); document.body.appendChild(a); a.click(); a.remove();
+      if (!res.ok) {
+        // Without this check the server's error JSON would be saved as the list file, looking like success.
+        let msg = res.statusText; try { msg = (await res.json()).detail || msg; } catch (_) { /* not JSON */ }
+        ui.toast('List export failed: ' + msg, { type: 'error' }); return;
+      }
+      const blob = await res.blob(); const href = URL.createObjectURL(blob);
+      const a = h('a', { href, download: filename + '.txt' }); document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 30000);
     } catch (e) { ui.toast(e.message, { type: 'error' }); }
   }
 
   // ------------------------------------------------------------ yaml
+  const yamlHost = ds.layout && ds.layout.data_yaml_host;
+  const yamlStatus = h('span', { class: 'small faint grow' }, yamlHost ? `Updates ${yamlHost} — other keys are kept, comments are not` : 'Creates data.yaml in the dataset root');
   grid.appendChild(card('data.yaml', 'Ultralytics dataset config', h('div', { class: 'col gap-12' },
     h('pre', { class: 'mono small', style: 'margin:0;padding:10px;background:var(--surface-2);border-radius:6px;white-space:pre-wrap' }, previewYaml()),
-    h('div', { class: 'row' }, h('span', { class: 'small faint grow' }, ds.layout && ds.layout.data_yaml_host ? `Current: ${ds.layout.data_yaml_host}` : 'No data.yaml in dataset root yet'),
-      h('button', { class: 'btn', onClick: async () => { try { const r = await fovea.api.post(`/api/datasets/${ds.id}/export/yaml`); ui.toast(`Wrote ${r.path}`, { type: 'ok' }); } catch (e) { ui.toast(e.message, { type: 'error' }); } } }, icon('save', 14), 'Write data.yaml')))));
+    h('div', { class: 'row' }, yamlStatus,
+      h('button', { class: 'btn', onClick: async () => {
+        try { const r = await fovea.api.post(`/api/datasets/${ds.id}/export/yaml`); ui.toast(`Wrote ${r.path}`, { type: 'ok' }); yamlStatus.textContent = `Updated ${r.path}`; refresh && refresh(); }
+        catch (e) { ui.toast(e.message, { type: 'error' }); }
+      } }, icon('save', 14), yamlHost ? 'Update data.yaml' : 'Write data.yaml')))));
 
+  /** Mirrors the keys the server writes (split paths relative to the root when they live inside it). */
   function previewYaml() {
+    const root = (ds.root_host || '').replace(/\/+$/, '');
+    const rel = (p) => (p && root && p.startsWith(root + '/')) ? p.slice(root.length + 1) : p;
     const lines = [`path: ${ds.root_host}`];
-    for (const s of (ds.layout && ds.layout.sources) || []) lines.push(`${s.split || 'train'}: ${s.list_file_host || s.img_dir_host}`);
+    const seen = new Map();
+    for (const s of (ds.layout && ds.layout.sources) || []) {
+      const v = s.list_file_host || rel(s.img_dir_host); const k = s.split || 'train';
+      if (v) seen.set(k, [...(seen.get(k) || []), v]);
+    }
+    for (const [k, vs] of seen) { if (vs.length === 1) lines.push(`${k}: ${vs[0]}`); else { lines.push(`${k}:`); vs.forEach(v => lines.push(`- ${v}`)); } }
     lines.push(`nc: ${names.length}`, 'names:'); names.forEach((n, i) => lines.push(`  ${i}: ${n}`));
     return lines.join('\n');
   }

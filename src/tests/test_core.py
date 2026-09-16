@@ -692,3 +692,105 @@ def test_job_event_stream_ends_with_the_terminal_snapshot():
     with c.stream("GET", f"/api/jobs/{job.id}/events") as r:
         frames = [line[6:] for line in r.iter_lines() if line.startswith("data: ")]
     assert _json.loads(frames[-1])["status"] == "done"
+
+
+# ---------------------------------------------------------------- export streaming & data.yaml
+
+
+def _zip_dataset(tmp_path, n=150):
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    root = tmp_path / "z"
+    (root / "labels" / "train").mkdir(parents=True)
+    for k in range(n):
+        _img(root / "images" / "train" / f"{k:04d}.jpg", size=(40, 30))
+        if k % 2:
+            (root / "labels" / "train" / f"{k:04d}.txt").write_text("0 0.5 0.5 0.2 0.2\n")
+    ds_id = _register(root)
+    scan_dataset(ds_id, Job(id="z", kind="scan"))
+    return ds_id, root
+
+
+def _zip_threads():
+    import threading
+    return [t for t in threading.enumerate() if t.name == "fovea-zip" and t.is_alive()]
+
+
+def test_abandoned_zip_download_releases_its_producer_thread(tmp_path):
+    import io
+    import time
+    import zipfile
+    from fovea.core.export import stream_zip
+
+    ds_id, _root = _zip_dataset(tmp_path)
+    try:
+        data = b"".join(stream_zip(ds_id, ["c0"], {}))
+        assert len(zipfile.ZipFile(io.BytesIO(data)).namelist()) == 150 + 75 + 1   # images, labels, data.yaml
+        assert not _zip_threads()
+
+        import threading
+        before = set(threading.enumerate())
+        gen = stream_zip(ds_id, ["c0"], {})
+        next(gen); next(gen)                   # the client reads a little, then disconnects
+        time.sleep(0.2)                        # let the producer fill the queue and block
+        gen.close()
+        leaked = lambda: [t for t in threading.enumerate() if t not in before and t.is_alive()]
+        deadline = time.time() + 5
+        while leaked() and time.time() < deadline:
+            time.sleep(0.05)
+        assert not leaked(), "a cancelled download must not leave its producer blocked forever"
+    finally:
+        _drop(ds_id)
+
+
+def test_zip_export_that_fails_part_way_aborts_instead_of_ending_cleanly(tmp_path, monkeypatch):
+    from fovea.core import export as ex
+
+    ds_id, _root = _zip_dataset(tmp_path, n=4)
+    try:
+        monkeypatch.setattr(ex, "data_yaml_text", lambda *a, **k: (_ for _ in ()).throw(OSError("disk gone")))
+        with pytest.raises(RuntimeError, match="failed part-way"):
+            b"".join(ex.stream_zip(ds_id, ["c0"], {}))
+    finally:
+        _drop(ds_id)
+
+
+def test_zip_download_links_are_single_use_and_respect_include_unlabeled(tmp_path):
+    import io
+    import zipfile
+    from fastapi.testclient import TestClient
+    from fovea.core import imagesq
+    from fovea.main import app
+
+    ds_id, _root = _zip_dataset(tmp_path, n=6)
+    try:
+        assert imagesq.count_images(ds_id, {"has_label": "1"}) == 3
+        c = TestClient(app)
+        url = c.post(f"/api/datasets/{ds_id}/export/zip-link", json={"include_unlabeled": False, "include_yaml": False}).json()["url"]
+        r = c.get(url)
+        assert r.status_code == 200 and r.headers["content-disposition"].startswith("attachment")
+        names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
+        assert sorted(n for n in names if n.startswith("images/")) == [f"images/train/{k:04d}.jpg" for k in (1, 3, 5)]
+        assert c.get(url).status_code == 404, "a download link works once"
+    finally:
+        _drop(ds_id)
+
+
+def test_writing_data_yaml_updates_the_detected_file_and_keeps_foreign_keys(tmp_path):
+    import yaml as _yaml
+    from fovea.core.export import write_data_yaml
+
+    root = _mini_dataset(tmp_path)
+    (root / "dataset.yaml").write_text(
+        "# hand written\npath: .\ntrain: images/train\nval: images/val\nkpt_shape: [17, 3]\n"
+        "download: https://example.com/ds.zip\nnames:\n  0: person\n")
+    lay = layout.detect(str(root)).to_dict()
+    assert lay["data_yaml"].endswith("dataset.yaml")
+    out = write_data_yaml(str(root), ["person", "fall"], lay)
+    assert out.endswith("dataset.yaml") and not (root / "data.yaml").exists()
+    doc = _yaml.safe_load((root / "dataset.yaml").read_text())
+    assert doc["kpt_shape"] == [17, 3] and doc["download"] == "https://example.com/ds.zip"
+    assert doc["nc"] == 2 and doc["names"] == {0: "person", 1: "fall"}
+    assert doc["train"] == "images/train" and doc["val"] == "images/val"
+    assert not [p for p in root.iterdir() if p.name.startswith(".fovea-")], "no temp files left behind"

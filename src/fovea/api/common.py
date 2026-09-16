@@ -11,7 +11,7 @@ from ..jobs import jobs
 from ..paths import to_host
 
 FILTER_KEYS = ("split", "cls", "only_cls", "labeled", "review", "exclude_review", "issue", "q", "seq", "ids",
-               "min_boxes", "max_boxes")
+               "min_boxes", "max_boxes", "has_label")
 
 
 def filters_from(source: Any) -> Dict[str, Any]:

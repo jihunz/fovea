@@ -46,6 +46,9 @@ def build_where(dataset_id: str, f: Dict[str, Any]) -> Tuple[str, List[Any]]:
         where.append("i.n_boxes > 0 AND NOT EXISTS (SELECT 1 FROM boxes b WHERE b.image_id = i.id AND b.cls NOT IN (%s))" % ",".join("?" * len(only_cls)))
         params.extend(only_cls)
 
+    if f.get("has_label") in ("1", 1, True):
+        where.append("i.has_label = 1")            # exports with "include images without labels" off
+
     labeled = f.get("labeled")
     if labeled in ("1", 1, True, "labeled"):
         where.append("i.has_label = 1 AND i.n_boxes > 0")

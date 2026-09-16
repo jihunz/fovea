@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
+import threading
 import time
 from pathlib import Path
+from typing import Dict, Tuple
 
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -22,16 +25,54 @@ def _safe_name(s: str, default: str) -> str:
     return s or default
 
 
-@router.post("/{ds_id}/export/zip")
-def export_zip(ds_id: str, payload: dict = Body(...)):
-    row = get_dataset_or_404(ds_id)
+def _export_filters(payload: dict) -> dict:
     f = filters_from(payload.get("filters") or {})
+    if not payload.get("include_unlabeled", True):
+        f["has_label"] = "1"                   # so counts, progress and the archive agree
+    return f
+
+
+def _zip_response(row: dict, payload: dict) -> StreamingResponse:
     names = db.loads(row["classes"])
-    gen = ex.stream_zip(ds_id, names, f, payload.get("resize"), bool(payload.get("include_unlabeled", True)),
-                        bool(payload.get("include_yaml", True)))
+    gen = ex.stream_zip(row["id"], names, _export_filters(payload), payload.get("resize"),
+                        bool(payload.get("include_unlabeled", True)), bool(payload.get("include_yaml", True)))
     fname = _safe_name(payload.get("filename") or f"{row['id']}-{int(time.time())}", "export") + ".zip"
     return StreamingResponse(gen, media_type="application/zip",
                              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@router.post("/{ds_id}/export/zip")
+def export_zip(ds_id: str, payload: dict = Body(...)):
+    """Stream a ZIP directly (API clients). The web UI uses zip-link instead."""
+    return _zip_response(get_dataset_or_404(ds_id), payload)
+
+
+_LINKS: Dict[str, Tuple[float, str, dict]] = {}
+_LINKS_LOCK = threading.Lock()
+LINK_TTL = 300.0
+
+
+@router.post("/{ds_id}/export/zip-link")
+def export_zip_link(ds_id: str, payload: dict = Body(...)):
+    """A one-time URL for the same export. The browser downloads it natively — streaming to disk with its
+    own progress UI — where fetch() + blob() would hold the entire archive in the tab's memory first."""
+    get_dataset_or_404(ds_id)
+    token = secrets.token_urlsafe(24)
+    now = time.time()
+    with _LINKS_LOCK:
+        for k in [k for k, (t, _d, _p) in _LINKS.items() if now - t > LINK_TTL]:
+            del _LINKS[k]
+        _LINKS[token] = (now, ds_id, payload)
+    return {"url": f"/api/datasets/{ds_id}/export/zip/{token}", "expires_in": int(LINK_TTL)}
+
+
+@router.get("/{ds_id}/export/zip/{token}")
+def export_zip_download(ds_id: str, token: str):
+    with _LINKS_LOCK:
+        entry = _LINKS.pop(token, None)          # single use
+    if not entry or entry[1] != ds_id or time.time() - entry[0] > LINK_TTL:
+        raise HTTPException(404, "This download link has expired — start the export again")
+    return _zip_response(get_dataset_or_404(ds_id), entry[2])
 
 
 @router.post("/{ds_id}/export/copy")
@@ -44,7 +85,7 @@ def export_copy(ds_id: str, payload: dict = Body(...)):
         ex.check_copy_target(ds_id, target)       # fail fast, before a job is queued
     except ValueError as e:
         raise HTTPException(400, str(e))
-    f = filters_from(payload.get("filters") or {})
+    f = _export_filters(payload)
     names = db.loads(row["classes"])
     job = jobs.submit("export_copy", lambda j: ex.copy_subset(j, ds_id, names, f, target, payload.get("resize"),
                                                                bool(payload.get("include_unlabeled", True)),
