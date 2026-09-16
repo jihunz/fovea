@@ -234,15 +234,22 @@ def scan_dataset(dataset_id: str, job: Job) -> dict:
         # so an unreachable source keeps its rows instead of being silently erased.
         prune = "dataset_id=? AND scan_token != ?"
         prune_args: List[object] = [dataset_id, token]
+        prunable = True
         if unreachable:
-            keep = sorted({s.split or "" for s in reachable})
-            if not keep:
-                keep = [""]
-            prune += " AND split IN (%s)" % ",".join("?" * len(keep))
-            prune_args.extend(keep)
-        conn.execute(f"DELETE FROM boxes WHERE dataset_id=? AND image_id IN (SELECT id FROM images WHERE {prune})",
-                     [dataset_id] + prune_args)
-        conn.execute(f"DELETE FROM images WHERE {prune}", prune_args)
+            # A split is only safe to prune when EVERY source feeding it was readable this pass —
+            # otherwise (two sources on one split, one of them gone) we would delete exactly the rows
+            # we are trying to protect.
+            gone_splits = {s.split or "" for s in unreachable}
+            keep = sorted({s.split or "" for s in reachable} - gone_splits)
+            if keep:
+                prune += " AND split IN (%s)" % ",".join("?" * len(keep))
+                prune_args.extend(keep)
+            else:
+                prunable = False
+        if prunable:
+            conn.execute(f"DELETE FROM boxes WHERE dataset_id=? AND image_id IN (SELECT id FROM images WHERE {prune})",
+                         [dataset_id] + prune_args)
+            conn.execute(f"DELETE FROM images WHERE {prune}", prune_args)
         conn.execute("COMMIT")
     except Exception:
         try:

@@ -184,3 +184,37 @@ def test_check_reachable_samples_across_the_id_range(tmp_path):
         db.execute("DELETE FROM boxes WHERE dataset_id=?", (ds_id,))
         db.execute("DELETE FROM images WHERE dataset_id=?", (ds_id,))
         db.execute("DELETE FROM datasets WHERE id=?", (ds_id,))
+
+
+def test_partial_unreachable_keeps_the_missing_split(tmp_path):
+    """One split vanishing must not take the others down, and must not erase its own rows either."""
+    import uuid
+    from fovea import db
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    db.init_db()
+    root = _mini_dataset(tmp_path)          # train + val
+    lay = layout.detect(str(root))
+    ds_id = "p-" + uuid.uuid4().hex[:8]
+    now = db.now()
+    db.execute(
+        "INSERT INTO datasets(id,name,root,layout,classes,classes_source,description,status,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (ds_id, ds_id, lay.root, db.dumps(lay.to_dict()), db.dumps([]), "inferred", "", "new", now, now),
+    )
+    try:
+        assert scan_dataset(ds_id, Job(id="a", kind="scan"))["images"] == 2
+
+        # only the val split disappears
+        (root / "images" / "val" / "a.jpg").unlink()
+        (root / "images" / "val").rmdir()
+        scan_dataset(ds_id, Job(id="b", kind="scan"))
+
+        splits = {r["split"] for r in db.query("SELECT DISTINCT split FROM images WHERE dataset_id=?", (ds_id,))}
+        assert "train" in splits, "the reachable split must still be indexed"
+        assert "val" in splits, "the unreachable split must keep its existing rows, not be erased"
+    finally:
+        db.execute("DELETE FROM boxes WHERE dataset_id=?", (ds_id,))
+        db.execute("DELETE FROM images WHERE dataset_id=?", (ds_id,))
+        db.execute("DELETE FROM datasets WHERE id=?", (ds_id,))
