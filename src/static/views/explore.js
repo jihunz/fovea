@@ -199,6 +199,14 @@ async function render(el, { ctx, dataset, fovea }) {
     grid.classList.toggle('selecting', selected.size > 0);
     updateBulk();
   }
+  /** Select every image currently loaded into the cursor (⌘A). */
+  function selectAllLoaded() {
+    cursor.items.forEach((it) => { if (it) selected.add(it.id); });
+    lastClickIdx = focusIdx;
+    for (const [idx, t] of tiles) { const x = cursor.items[idx]; t.classList.toggle('selected', !!x && selected.has(x.id)); }
+    grid.classList.toggle('selecting', selected.size > 0);
+    updateBulk();
+  }
   function clearSelection() { selected.clear(); for (const t of tiles.values()) t.classList.remove('selected'); grid.classList.remove('selecting'); updateBulk(); }
   function updateBulk() {
     bulk.classList.toggle('hidden', selected.size === 0);
@@ -239,7 +247,13 @@ async function render(el, { ctx, dataset, fovea }) {
     const t = tiles.get(i); if (t) { t.classList.add('focus'); t.scrollIntoView({ block: 'nearest' }); } else cursor.ensure(i).then(() => loadMore());
   }
   const onKey = (e) => {
-    if (isTyping() || ui.hasModal() || e.metaKey || e.ctrlKey || e.altKey) { if ((e.metaKey || e.ctrlKey) && e.key === 'a' && !isTyping() && !inspect) { e.preventDefault(); cursor.items.forEach(it => it && selected.add(it.id)); toggleSelect(focusIdx, {}, false); selected.size || 0; for (const [idx, t] of tiles) t.classList.add('selected'); grid.classList.add('selecting'); updateBulk(); } return; }
+    if (isTyping() || ui.hasModal() || e.metaKey || e.ctrlKey || e.altKey) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'a' && !isTyping() && !inspect) {
+        e.preventDefault();
+        selectAllLoaded();
+      }
+      return;
+    }
     if (inspect) return; // inspect has its own handler
     const k = e.key;
     if (k === 'ArrowRight') { e.preventDefault(); setFocus(focusIdx + 1); }

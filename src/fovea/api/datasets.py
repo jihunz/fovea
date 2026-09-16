@@ -312,9 +312,23 @@ def bulk_labels(ds_id: str, payload: dict = Body(...)):
     return run()
 
 
+def _int_ids(values: Any) -> List[int]:
+    """Coerce a client-supplied id list, dropping anything that is not an integer. A stray null must
+    not surface as a 500 with a raw TypeError."""
+    out: List[int] = []
+    for v in values or []:
+        try:
+            out.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _select_target_ids(ds_id: str, payload: dict) -> List[int]:
     if payload.get("image_ids"):
-        ids = [int(x) for x in payload["image_ids"]]
+        ids = _int_ids(payload["image_ids"])
+        if not ids:
+            return []
         rows = db.query("SELECT id FROM images WHERE dataset_id=? AND id IN (%s) ORDER BY id" % ",".join("?" * len(ids)), [ds_id] + ids)
         return [r["id"] for r in rows]
     rng = payload.get("range")
@@ -346,7 +360,7 @@ def set_review(ds_id: str, payload: dict = Body(...)):
     if payload.get("filters") is not None and not ids and not rels:
         ids = _select_target_ids(ds_id, {"filters": payload["filters"]})
     if ids:
-        ids = [int(x) for x in ids]
+        ids = _int_ids(ids)
         for i in range(0, len(ids), 800):
             chunk = ids[i:i + 800]
             rels.extend(r["rel_path"] for r in db.query("SELECT rel_path FROM images WHERE dataset_id=? AND id IN (%s)" % ",".join("?" * len(chunk)), [ds_id] + chunk))
