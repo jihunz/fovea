@@ -12,11 +12,10 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 import yaml
 from PIL import Image
 
-from .. import db
 from ..jobs import Job
 from ..paths import resolve, to_host
 from .imagesq import iter_images
-from .labels import read_label_file, write_label_file
+from .labels import format_box, read_label_file, write_label_file
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -67,8 +66,10 @@ def _label_lines(label_path: Optional[str]) -> str:
     p = Path(label_path)
     if not p.is_file():
         return ""
+    # An export is a training set (it ships a data.yaml): confidence columns from prediction files would
+    # make trainers such as Ultralytics reject the file, so exports always carry plain 5-column rows.
     boxes, _c, _i = read_label_file(p)
-    return "".join(f"{int(b[0])} {b[1]:.6f} {b[2]:.6f} {b[3]:.6f} {b[4]:.6f}\n" for b in boxes)
+    return "".join(format_box(b) + "\n" for b in boxes)
 
 
 def _target_names(item: dict) -> Tuple[str, str]:

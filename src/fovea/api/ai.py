@@ -7,8 +7,8 @@ from fastapi import APIRouter, Body, HTTPException
 
 from .. import db
 from ..core import yolo
-from ..core.labels import read_label_file, sanitize_boxes, write_label_file
-from ..core.scanner import refresh_image
+from ..core.labels import LABEL_LOCK, read_label_rows, sanitize_boxes, write_label_file
+from ..core.scanner import refresh_dataset_counts, refresh_image
 from ..jobs import jobs
 from .common import get_dataset_or_404
 from .datasets import _select_target_ids
@@ -88,28 +88,39 @@ def autolabel(payload: dict = Body(...)):
         yolo.load(model)
         done_imgs = boxes_added = skipped = 0
         job.update(0, len(targets), f"Auto-label with {model}")
-        for k, iid in enumerate(targets):
-            img = db.query_one("SELECT abs_path, label_path, n_boxes FROM images WHERE id=?", (iid,))
-            if not img or not img["label_path"]:
-                continue
-            lp = Path(img["label_path"])
-            existing = read_label_file(lp)[0] if lp.is_file() else []
-            if mode == "fill" and existing:
-                skipped += 1
-                job.update(done=k + 1, message=f"{k + 1}/{len(targets)} (skipped labeled)")
-                continue
-            dets = yolo.detect(model, img["abs_path"], conf, classes, imgsz)
-            new = sanitize_boxes([d[:5] for d in _map_dets(dets, class_map, keep_unmapped)])
-            if not new and mode != "replace" and not lp.is_file():
-                skipped += 1  # nothing detected: do not create an empty label file
-                job.update(done=k + 1, message=f"{k + 1}/{len(targets)} (no detections)")
-                continue
-            final = (existing + new) if mode == "append" else new
-            write_label_file(lp, final)
-            refresh_image(iid, n_classes)
-            done_imgs += 1
-            boxes_added += len(new)
-            job.update(done=k + 1, message=f"{k + 1}/{len(targets)} · {boxes_added} boxes")
+        try:
+            for k, iid in enumerate(targets):
+                img = db.query_one("SELECT abs_path, label_path, n_boxes FROM images WHERE id=?", (iid,))
+                if not img or not img["label_path"]:
+                    continue
+                lp = Path(img["label_path"])
+                existing = read_label_rows(lp)[0] if lp.is_file() else []
+                if mode == "fill" and existing:
+                    skipped += 1
+                    job.update(done=k + 1, message=f"{k + 1}/{len(targets)} (skipped labeled)")
+                    continue
+                dets = yolo.detect(model, img["abs_path"], conf, classes, imgsz)
+                new = sanitize_boxes([d[:5] for d in _map_dets(dets, class_map, keep_unmapped)])
+                with LABEL_LOCK:
+                    # Inference takes a while: re-read so an edit saved meanwhile is kept (append) or respected (fill).
+                    existing = read_label_rows(lp)[0] if lp.is_file() else []
+                    if mode == "fill" and existing:
+                        wrote = False
+                    elif not new and mode != "replace" and not lp.is_file():
+                        wrote = False          # nothing detected: do not create an empty label file
+                    else:
+                        write_label_file(lp, (existing + new) if mode == "append" else new)
+                        wrote = True
+                if not wrote:
+                    skipped += 1
+                    job.update(done=k + 1, message=f"{k + 1}/{len(targets)} (skipped)")
+                    continue
+                refresh_image(iid, n_classes, update_counts=False)
+                done_imgs += 1
+                boxes_added += len(new)
+                job.update(done=k + 1, message=f"{k + 1}/{len(targets)} · {boxes_added} boxes")
+        finally:
+            refresh_dataset_counts(ds_id)
         return {"images": done_imgs, "boxes": boxes_added, "skipped": skipped}
 
     job = jobs.submit("autolabel", run, dataset_id=ds_id, message="Queued")

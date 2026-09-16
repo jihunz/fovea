@@ -5,14 +5,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse
 
 from .. import db
 from ..config import IMAGE_EXTS, TEXT_PREVIEW_MAX
 from ..core import imagesq, stats
-from ..core.labels import ISSUE_LABELS, read_label_file, sanitize_boxes, write_label_file
-from ..core.layout import Layout, detect, slugify
-from ..core.scanner import refresh_image, scan_dataset
+from ..core.labels import (ISSUE_LABELS, LABEL_LOCK, read_label_rows, read_label_snapshot, validate_boxes,
+                           write_label_file)
+from ..core.layout import detect, slugify
+from ..core.scanner import refresh_dataset_counts, refresh_image, scan_dataset
 from ..jobs import jobs
 from ..paths import resolve, to_host
 from .common import dataset_public, filters_from, get_dataset_or_404
@@ -226,13 +227,18 @@ def get_labels(ds_id: str, image_id: int):
     classes = db.loads(row["classes"])
     n_classes = len(classes) if row.get("classes_source") != "inferred" and classes else None
     lp = Path(img["label_path"]) if img["label_path"] else None
+    version = None
     if lp and lp.is_file():
-        boxes, confs, issues = read_label_file(lp, n_classes)
-        exists = True
+        boxes, confs, issues, version = read_label_snapshot(lp, n_classes)
+        exists = version is not None
     else:
         boxes, confs, issues, exists = [], [], set(), False
     return {"image_id": image_id, "boxes": boxes, "confs": confs, "issues": sorted(issues), "exists": exists,
+            "version": version,
             "label_path": str(lp) if lp else None, "label_path_host": to_host(lp) if lp else None}
+
+
+AUTO_EXTEND_LIMIT = 32   # an inferred class list grows to cover a new id only when the gap is this small
 
 
 @router.put("/{ds_id}/images/{image_id}/labels")
@@ -243,20 +249,34 @@ def put_labels(ds_id: str, image_id: int, payload: dict = Body(...)):
         raise HTTPException(404, "Image not found")
     if not img["label_path"]:
         raise HTTPException(400, "No label path for this image")
-    boxes = sanitize_boxes(payload.get("boxes") or [])
-    write_label_file(Path(img["label_path"]), boxes)
+    lp = Path(img["label_path"])
+    boxes, rejected = validate_boxes(payload.get("boxes") or [])
+
+    # Optimistic concurrency: the editor sends the version it loaded. If the file changed underneath it
+    # (another tab, a bulk op, an external tool) we refuse rather than silently resurrect or erase boxes.
+    with LABEL_LOCK:     # endpoints run on a thread pool: the check and the write must not interleave
+        if "base_version" in payload:
+            b, c, _i, current = read_label_snapshot(lp)
+            if payload.get("base_version") != current:
+                theirs = [list(x[:5]) + ([cf] if cf is not None else []) for x, cf in zip(b, c)]
+                raise HTTPException(409, detail={
+                    "message": "The label file was changed elsewhere since it was loaded.",
+                    "version": current, "boxes": theirs,
+                })
+        write_label_file(lp, boxes)
+        b, c, _i, version = read_label_snapshot(lp)
+        boxes = [list(x[:5]) + ([cf] if cf is not None else []) for x, cf in zip(b, c)]   # exactly what is on disk
     classes = db.loads(row["classes"])
     n_classes = len(classes) if row.get("classes_source") != "inferred" and classes else None
-    # auto-extend inferred class list
     max_cls = max((int(b[0]) for b in boxes), default=-1)
-    if max_cls >= len(classes) and row.get("classes_source") == "inferred":
+    if row.get("classes_source") == "inferred" and len(classes) <= max_cls < len(classes) + AUTO_EXTEND_LIMIT:
         classes = classes + [f"class_{i}" for i in range(len(classes), max_cls + 1)]
         db.execute("UPDATE datasets SET classes=? WHERE id=?", (db.dumps(classes), ds_id))
     refresh_image(image_id, n_classes)
     r2 = db.query_one(f"{imagesq.BASE_SELECT} WHERE i.id=?", (image_id,))
     item = imagesq.row_to_item(r2, with_paths=True)
     item["boxes"] = boxes
-    return {"item": item, "saved": len(boxes)}
+    return {"item": item, "saved": len(boxes), "rejected": rejected, "version": version}
 
 
 @router.post("/{ds_id}/labels/bulk")
@@ -274,42 +294,55 @@ def bulk_labels(ds_id: str, payload: dict = Body(...)):
 
     def run(job=None):
         changed = images = 0
-        for k, iid in enumerate(targets):
-            img = db.query_one("SELECT label_path FROM images WHERE id=?", (iid,))
-            if not img or not img["label_path"]:
-                continue
-            lp = Path(img["label_path"])
-            boxes, _c, _i = read_label_file(lp) if lp.is_file() else ([], [], set())
-            new = []
-            for b in boxes:
-                if op == "set_class":
-                    if payload.get("only_cls") is None or int(b[0]) == int(payload["only_cls"]):
-                        b = [int(payload["cls"])] + list(b[1:])
-                elif op == "remap":
-                    mapping = {int(k2): int(v) for k2, v in (payload.get("mapping") or {}).items()}
-                    if int(b[0]) in mapping:
-                        b = [mapping[int(b[0])]] + list(b[1:])
-                elif op == "delete_class":
-                    if int(b[0]) == int(payload["cls"]):
-                        changed += 1
-                        continue
-                new.append(b)
-            if op == "clear":
-                new = []
-            if new != boxes or op == "clear":
-                if op != "delete_class":
-                    changed += sum(1 for a, b2 in zip(boxes, new) if a != b2) + abs(len(boxes) - len(new))
-                write_label_file(lp, new)
-                refresh_image(iid, n_classes)
+        mapping = {int(k2): int(v) for k2, v in (payload.get("mapping") or {}).items()} if op == "remap" else {}
+        try:
+            for k, iid in enumerate(targets):
+                if job and k % 20 == 0:
+                    job.update(done=k, total=len(targets), message=f"{op} {k}/{len(targets)}")
+                img = db.query_one("SELECT label_path FROM images WHERE id=?", (iid,))
+                if not img or not img["label_path"]:
+                    continue
+                lp = Path(img["label_path"])
+                with LABEL_LOCK:
+                    n_changed = _bulk_rewrite(lp, op, payload, mapping)
+                if n_changed is None:
+                    continue
+                changed += n_changed
+                refresh_image(iid, n_classes, update_counts=False)
                 images += 1
-            if job and k % 20 == 0:
-                job.update(done=k, total=len(targets), message=f"{op} {k}/{len(targets)}")
+        finally:
+            refresh_dataset_counts(ds_id)   # once, even if the job is cancelled part-way
         return {"changed": changed, "images": images}
 
     if len(targets) > 3000:
         job = jobs.submit("bulk_labels", run, dataset_id=ds_id, message=op)
         return {"job": job.to_dict()}
     return run()
+
+
+def _bulk_rewrite(lp: Path, op: str, payload: dict, mapping: Dict[int, int]) -> Optional[int]:
+    """Apply one bulk op to one label file. Returns the number of changed rows, or None if untouched."""
+    if not lp.is_file():
+        return None           # nothing to change — and "clear" must not invent an empty label file
+    rows, _issues = read_label_rows(lp)   # conf stays inside each row, so filtering cannot misassign it
+    new = []
+    for b in rows:
+        if op == "set_class":
+            if payload.get("only_cls") is None or int(b[0]) == int(payload["only_cls"]):
+                b = [int(payload["cls"])] + list(b[1:])
+        elif op == "remap":
+            if int(b[0]) in mapping:
+                b = [mapping[int(b[0])]] + list(b[1:])
+        elif op == "delete_class":
+            if int(b[0]) == int(payload["cls"]):
+                continue
+        new.append(b)
+    if op == "clear":
+        new = []
+    if new == rows:
+        return None
+    write_label_file(lp, new)
+    return sum(1 for a, b2 in zip(rows, new) if a != b2) + abs(len(rows) - len(new))
 
 
 def _int_ids(values: Any) -> List[int]:
