@@ -529,6 +529,31 @@ def test_export_labels_are_plain_training_rows(tmp_path):
 # ---------------------------------------------------------------- ordering, reviews, export safety
 
 
+def test_export_copy_refuses_to_write_into_the_dataset(tmp_path):
+    from fovea.core.export import check_copy_target, copy_subset
+    from fovea.jobs import Job
+
+    root = _mini_dataset(tmp_path)
+    (root / "labels" / "train" / "a.txt").write_text("0 0.5 0.5 0.2 0.2 0.91\n")
+    ds_id = _register(root)
+    try:
+        from fovea.core.scanner import scan_dataset
+        scan_dataset(ds_id, Job(id="e", kind="scan"))
+        before = (root / "images" / "train" / "a.jpg").read_bytes()
+        for bad in (root, root / "images", root.parent):
+            with pytest.raises(ValueError):
+                check_copy_target(ds_id, str(bad))
+        with pytest.raises(ValueError):
+            copy_subset(Job(id="c", kind="export_copy"), ds_id, ["c0"], {}, str(root), resize={"mode": "max", "size": 16})
+        assert (root / "images" / "train" / "a.jpg").read_bytes() == before
+        assert (root / "labels" / "train" / "a.txt").read_text() == "0 0.5 0.5 0.2 0.2 0.91\n"
+        out = tmp_path / "elsewhere"
+        res = copy_subset(Job(id="c2", kind="export_copy"), ds_id, ["c0"], {}, str(out))
+        assert res["images"] == 2 and (out / "labels" / "train" / "a.txt").read_text() == "0 0.500000 0.500000 0.200000 0.200000\n"
+    finally:
+        _drop(ds_id)
+
+
 def test_dataset_files_are_never_served_as_active_content(tmp_path):
     from fastapi.testclient import TestClient
     from fovea.main import app

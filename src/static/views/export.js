@@ -66,8 +66,11 @@ async function render(el, { dataset, fovea }) {
       const bar = ui.progress(0); const txt = h('span', { class: 'small muted' }, 'Copying…');
       jobBox.innerHTML = ''; jobBox.appendChild(h('div', { class: 'col gap-4' }, txt, bar));
       const snap = await fovea.api.watchJob(job.id, (s) => { txt.textContent = s.message; bar.firstChild.style.width = `${Math.round(s.progress * 100)}%`; });
-      txt.textContent = `Done: ${fmt.num(snap.result.images)} images, ${fmt.num(snap.result.labels)} labels → ${snap.result.target}`;
-      ui.toast('Subset copied', { type: 'ok' });
+      if (snap.status === 'cancelled') { txt.textContent = 'Cancelled — files copied before the cancel were kept.'; ui.toast('Copy cancelled'); return; }
+      const r = snap.result || {};
+      const extra = [r.failed ? `${fmt.num(r.failed)} unreadable images skipped` : '', r.skipped_same_file ? `${fmt.num(r.skipped_same_file)} source files left untouched` : ''].filter(Boolean).join(' · ');
+      txt.textContent = `Done: ${fmt.num(r.images)} images, ${fmt.num(r.labels)} labels → ${r.target}${extra ? ` (${extra})` : ''}`;
+      ui.toast('Subset copied', { type: r.failed ? 'error' : 'ok' });
     } catch (e) { ui.toast(e.message, { type: 'error' }); }
   }
 

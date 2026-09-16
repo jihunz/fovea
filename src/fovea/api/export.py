@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import time
 from pathlib import Path
@@ -39,6 +40,10 @@ def export_copy(ds_id: str, payload: dict = Body(...)):
     target = (payload.get("target_dir") or "").strip()
     if not target:
         raise HTTPException(400, "target_dir is required")
+    try:
+        ex.check_copy_target(ds_id, target)       # fail fast, before a job is queued
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     f = filters_from(payload.get("filters") or {})
     names = db.loads(row["classes"])
     job = jobs.submit("export_copy", lambda j: ex.copy_subset(j, ds_id, names, f, target, payload.get("resize"),
@@ -56,7 +61,12 @@ def export_list(ds_id: str, payload: dict = Body(...)):
     if payload.get("write"):
         fname = _safe_name(payload.get("filename") or "fovea-list", "list") + ".txt"
         out = Path(row["root"]) / fname
-        out.write_text(text, encoding="utf-8")
+        used = {str(Path(s["list_file"])) for s in (db.loads(row["layout"], {}) or {}).get("sources", []) if s.get("list_file")}
+        if str(out) in used:
+            raise HTTPException(409, f"{fname} is one of this dataset's own image lists — choose another name")
+        tmp = out.with_name(f".{fname}.fovea-tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, out)
         return {"path": to_host(out), "lines": text.count("\n")}
     fname = _safe_name(payload.get("filename") or f"{row['id']}-list", "list") + ".txt"
     return PlainTextResponse(text, headers={"Content-Disposition": f'attachment; filename="{fname}"'})
