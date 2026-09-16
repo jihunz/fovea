@@ -475,8 +475,12 @@ def get_file(ds_id: str, path: str = Query(...), raw: int = Query(0)):
     p = _safe_child(root, path.strip("/"))
     if not p.is_file():
         raise HTTPException(404, "File not found")
-    if raw or p.suffix.lower() in IMAGE_EXTS:
+    if p.suffix.lower() in IMAGE_EXTS:
         return FileResponse(p, media_type=mimetypes.guess_type(p.name)[0] or "application/octet-stream")
+    if raw:
+        # Never serve a dataset file as a document on this origin: an .html/.svg/.js shipped inside a
+        # dataset would run with full access to this API. Anything that is not an image downloads.
+        return FileResponse(p, media_type="application/octet-stream", filename=p.name)
     size = p.stat().st_size
     with p.open("rb") as fh:
         data = fh.read(TEXT_PREVIEW_MAX)

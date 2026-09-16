@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.datastructures import MutableHeaders
 
 from . import __version__, db
 from .api import ai, datasets, export, fs, images, jobs as jobs_api, meta
@@ -24,6 +25,29 @@ class RevalidatingStatic(StaticFiles):
 
 
 app = FastAPI(title="Fovea", version=__version__, docs_url="/api/docs", redoc_url=None, openapi_url="/api/openapi.json")
+
+
+class SecurityHeaders:
+    """Pure ASGI (streaming- and SSE-safe): browsers must never sniff a served file into something executable."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.inner(scope, receive, send)
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.setdefault("X-Content-Type-Options", "nosniff")
+                headers.setdefault("Referrer-Policy", "same-origin")
+            await send(message)
+
+        await self.inner(scope, receive, send_with_headers)
+
+
+app.add_middleware(SecurityHeaders)
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
 db.init_db()

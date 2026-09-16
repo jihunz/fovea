@@ -50,7 +50,7 @@ async function render(el, { ctx, dataset, fovea }) {
       catch (err) { pre.textContent = err.message; }
       return;
     }
-    preview.appendChild(h('div', { class: 'empty' }, icon('file', 30), h('p', `${e.name} · ${fmt.bytes(e.size)}`), h('a', { class: 'btn btn-sm', href: `/api/datasets/${ds.id}/file?path=${encodeURIComponent(e.rel)}&raw=1`, target: '_blank' }, 'Open raw')));
+    preview.appendChild(h('div', { class: 'empty' }, icon('file', 30), h('p', `${e.name} · ${fmt.bytes(e.size)}`), h('a', { class: 'btn btn-sm', href: `/api/datasets/${ds.id}/file?path=${encodeURIComponent(e.rel)}&raw=1`, download: e.name }, icon('download', 13), 'Download')));
   }
   await load(path);
 }

@@ -524,3 +524,28 @@ def test_export_labels_are_plain_training_rows(tmp_path):
     p = tmp_path / "l.txt"
     p.write_text("0 0.5 0.5 0.2 0.2 0.93\n")
     assert _label_lines(str(p)) == "0 0.500000 0.500000 0.200000 0.200000\n"
+
+
+# ---------------------------------------------------------------- ordering, reviews, export safety
+
+
+def test_dataset_files_are_never_served_as_active_content(tmp_path):
+    from fastapi.testclient import TestClient
+    from fovea.main import app
+
+    root = _mini_dataset(tmp_path)
+    (root / "README.html").write_text("<script>fetch('/api/fs/browse?path=/')</script>")
+    (root / "logo.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>")
+    ds_id = _register(root)
+    try:
+        c = TestClient(app)
+        for name in ("README.html", "logo.svg"):
+            r = c.get(f"/api/datasets/{ds_id}/file", params={"path": name, "raw": 1})
+            assert r.status_code == 200
+            assert r.headers["content-type"] == "application/octet-stream"
+            assert r.headers["content-disposition"].startswith("attachment")
+            assert r.headers["x-content-type-options"] == "nosniff"
+        img = c.get(f"/api/datasets/{ds_id}/file", params={"path": "images/train/a.jpg"})
+        assert img.headers["content-type"] == "image/jpeg"
+    finally:
+        _drop(ds_id)
