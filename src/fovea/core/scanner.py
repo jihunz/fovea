@@ -15,7 +15,7 @@ from ..config import IMAGE_EXTS, LABEL_EXT
 from ..jobs import Job, JobCancelled
 from ..paths import resolve, to_host
 from .labels import read_label_file
-from .layout import Layout, Source, label_path_for_image
+from .layout import Layout, Source, iter_files, label_path_for_image
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -100,7 +100,7 @@ def _utf8_ok(*values: str) -> bool:
 
 
 def enumerate_source(src: Source, errors: Optional[List[str]] = None,
-                     skipped: Optional[Counter] = None) -> Iterator[Tuple[str, str, str, str]]:
+                     skipped: Optional[Counter] = None, peers=()) -> Iterator[Tuple[str, str, str, str]]:
     """Yield (rel_key, split, abs_image, abs_label_target).
 
     `errors` collects listing failures. A failure must never look like "this folder is empty" —
@@ -147,12 +147,10 @@ def enumerate_source(src: Source, errors: Optional[List[str]] = None,
     def _onerror(e: OSError) -> None:
         errors.append(f"{to_host(getattr(e, 'filename', '') or img_dir)}: {e.strerror or e}")
 
-    for root, dirs, files in os.walk(img_dir, onerror=_onerror):
-        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+    for root, files in iter_files(img_dir, getattr(src, "recursive", True), onerror=_onerror,
+                                  peers=[p for p in peers if p != src.img_dir]):
         rp = Path(root)
-        for f in sorted(files):
-            if f.startswith("."):
-                continue
+        for f in files:
             dot = f.rfind(".")
             if dot <= 0 or f[dot:].lower() not in IMAGE_EXTS:
                 continue
@@ -254,6 +252,7 @@ def _scan(ds: dict, job: Job, conn) -> dict:
     problems: List[str] = []
     skipped: Counter = Counter()
     entries: List[Tuple[str, str, str, str]] = []
+    peer_dirs = [s.img_dir for s in layout.sources if s.img_dir]   # links into these would index images twice
     for src in layout.sources:
         target = src.list_file or src.img_dir
         if not target or not Path(target).exists():
@@ -263,7 +262,7 @@ def _scan(ds: dict, job: Job, conn) -> dict:
         errs: List[str] = []
         label = src.split or "images"
         got: List[Tuple[str, str, str, str]] = []
-        for k, entry in enumerate(enumerate_source(src, errs, skipped), 1):
+        for k, entry in enumerate(enumerate_source(src, errs, skipped, peers=peer_dirs), 1):
             got.append(entry)
             if k % 2000 == 0:
                 job.update(message=f"Listing {label}… {len(entries) + k:,} found")   # also a cancel point

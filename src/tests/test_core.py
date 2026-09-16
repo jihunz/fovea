@@ -867,3 +867,60 @@ def test_thumbnails_revalidate_and_tiffs_are_displayable(tmp_path, monkeypatch):
         assert (row["width"], row["height"]) == (120, 90) and "image_unreadable" not in row["issues"]
     finally:
         _drop(ds_id)
+
+
+# ---------------------------------------------------------------- layout edge cases, symlinks, compare
+
+
+def test_symlinked_split_folders_are_indexed_and_browsable_but_foreign_links_are_not(tmp_path):
+    from fastapi import HTTPException
+    from fovea import db
+    from fovea.api.datasets import _safe_child
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    elsewhere = tmp_path / "elsewhere" / "train"
+    _img(elsewhere / "a.jpg")
+    _img(elsewhere / "b.jpg")
+    root = tmp_path / "ds"
+    (root / "images").mkdir(parents=True)
+    _img(root / "images" / "val" / "c.jpg")
+    os.symlink(elsewhere, root / "images" / "train")
+    os.symlink(root / "images", root / "images" / "val" / "loop")        # a link back to an ancestor
+    secret = tmp_path / "secret"; secret.mkdir(); (secret / "key.txt").write_text("nope")
+    os.symlink(secret, root / "notes")
+    ds_id = _register(root)
+    try:
+        res = scan_dataset(ds_id, Job(id="s", kind="scan"))
+        rels = sorted(r["rel_path"] for r in db.query("SELECT rel_path FROM images WHERE dataset_id=?", (ds_id,)))
+        assert rels == ["train/a.jpg", "train/b.jpg", "val/c.jpg"], rels
+        row = db.query_one("SELECT * FROM datasets WHERE id=?", (ds_id,))
+        assert _safe_child(row, "images/train").name == "train"        # the user's own link works
+        for bad in ("notes/key.txt", "../secret/key.txt", "/etc/passwd"):
+            with pytest.raises(HTTPException):
+                _safe_child(row, bad)
+    finally:
+        _drop(ds_id)
+
+
+def test_loose_images_beside_split_folders_keep_the_splits(tmp_path):
+    from fovea import db
+    from fovea.core.export import write_data_yaml
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    root = _mini_dataset(tmp_path)
+    _img(root / "images" / "stray_preview.jpg")
+    lay = layout.detect(str(root))
+    assert lay.kind == "ultralytics"
+    assert sorted((s.split, s.recursive) for s in lay.sources) == [("", False), ("train", True), ("val", True)]
+    ds_id = _register(root)
+    try:
+        scan_dataset(ds_id, Job(id="l", kind="scan"))
+        got = sorted((r["split"], r["rel_path"]) for r in db.query("SELECT split, rel_path FROM images WHERE dataset_id=?", (ds_id,)))
+        assert got == [("", "stray_preview.jpg"), ("train", "train/a.jpg"), ("val", "val/a.jpg")]
+        import yaml as _yaml
+        doc = _yaml.safe_load(Path(write_data_yaml(str(root), ["c0"], lay.to_dict())).read_text())
+        assert doc["train"] == "images/train" and doc["val"] == "images/val", "loose files never widen a split entry"
+    finally:
+        _drop(ds_id)

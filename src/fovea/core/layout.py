@@ -43,6 +43,7 @@ class Source:
     label_dir_exists: bool = False
     image_count: Optional[int] = None
     label_count: Optional[int] = None
+    recursive: bool = True       # False: only files directly in img_dir (loose images beside split folders)
 
     def to_public(self) -> dict:
         d = asdict(self)
@@ -77,6 +78,7 @@ class Layout:
                 split=s.get("split", ""), img_dir=s.get("img_dir", ""), label_dir=s.get("label_dir", ""),
                 list_file=s.get("list_file"), base=s.get("base"), label_dir_exists=s.get("label_dir_exists", False),
                 image_count=s.get("image_count"), label_count=s.get("label_count"),
+                recursive=s.get("recursive", True),
             ))
         return Layout(kind=d.get("kind", "unknown"), root=d.get("root", ""), sources=srcs,
                       data_yaml=d.get("data_yaml"), classes=list(d.get("classes", [])), notes=list(d.get("notes", [])))
@@ -101,10 +103,56 @@ def has_images_shallow(d: Path) -> bool:
     return False
 
 
-def count_images(d: Path, limit: Optional[int] = None) -> int:
+def _within(path: str, base: str) -> bool:
+    return path == base or path.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def iter_files(top: Path, recursive: bool = True, onerror=None, peers=()):
+    """Yield (dirpath, sorted visible file names) under `top`.
+
+    Symlinked folders are followed — `images/train -> /data/train` is part of the user's dataset — except
+    a link whose target lies inside, or above, `top` or any `peers` folder (the dataset's other sources):
+    following those would index the same images twice under another path, or loop. Each real directory
+    is still visited at most once. Non-recursive mode lists only `top` itself."""
+    if not recursive:
+        try:
+            with os.scandir(top) as it:
+                names = sorted(e.name for e in it if not e.name.startswith(".") and e.is_file(follow_symlinks=True))
+        except OSError as e:
+            if onerror:
+                onerror(e)
+            return
+        yield str(top), names
+        return
+    guarded = {os.path.realpath(str(p)) for p in (*peers, top) if p}
+    seen = set()
+    for root, dirs, files in os.walk(top, onerror=onerror, followlinks=True):
+        try:
+            st = os.stat(root)
+        except OSError as e:
+            if onerror:
+                onerror(e)
+            dirs[:] = []
+            continue
+        if (st.st_dev, st.st_ino) in seen:
+            dirs[:] = []
+            continue
+        seen.add((st.st_dev, st.st_ino))
+        keep = []
+        for d in sorted(x for x in dirs if not x.startswith(".")):
+            full = os.path.join(root, d)
+            if os.path.islink(full):
+                real = os.path.realpath(full)
+                if any(_within(real, g) or _within(g, real) for g in guarded):
+                    continue
+            keep.append(d)
+        dirs[:] = keep
+        yield root, sorted(f for f in files if not f.startswith("."))
+
+
+def count_images(d: Path, limit: Optional[int] = None, recursive: bool = True) -> int:
     n = 0
-    for _root, dirs, files in os.walk(d):
-        dirs[:] = [x for x in dirs if not x.startswith(".")]
+    for _root, files in iter_files(d, recursive):
         for f in files:
             dot = f.rfind(".")
             if dot > 0 and f[dot:].lower() in IMAGE_EXTS:
@@ -114,14 +162,10 @@ def count_images(d: Path, limit: Optional[int] = None) -> int:
     return n
 
 
-def count_labels(d: Path) -> int:
-    n = 0
+def count_labels(d: Path, recursive: bool = True) -> int:
     if not d.is_dir():
         return 0
-    for _root, dirs, files in os.walk(d):
-        dirs[:] = [x for x in dirs if not x.startswith(".")]
-        n += sum(1 for f in files if f.lower().endswith(LABEL_EXT))
-    return n
+    return sum(sum(1 for f in files if f.lower().endswith(LABEL_EXT)) for _root, files in iter_files(d, recursive))
 
 
 def derive_label_dir(img_dir: Path) -> Path:
@@ -283,13 +327,24 @@ def detect(raw: str, estimate: bool = True, _depth: int = 0) -> Layout:
         img_root = p / "images"
         subs = [d for d in sorted(img_root.iterdir()) if d.is_dir() and not d.name.startswith(".")]
         split_subs = [d for d in subs if norm_split(d.name) in ("train", "val", "test") or d.name.lower() in _SPLIT_LIKE]
-        if split_subs and not has_images_shallow(img_root):
+        if split_subs:
             lay = Layout(kind="ultralytics", root=str(p))
             for d in split_subs:
                 lay.sources.append(_mk_dir_source(norm_split(d.name), d, p / "labels" / d.name, estimate=estimate))
             others = [d for d in subs if d not in split_subs and count_images(d, 1)]
             for d in others:
                 lay.sources.append(_mk_dir_source(d.name, d, p / "labels" / d.name, estimate=estimate))
+            if has_images_shallow(img_root):
+                # Split folders plus loose images (a stray render, a half-finished manual split). Treating the
+                # whole tree as one split-less folder erased every image's split; skipping the loose files would
+                # hide them. Index them as their own, non-recursive, split-less source.
+                loose = Source(split="", img_dir=str(img_root), label_dir=str(p / "labels"),
+                               label_dir_exists=(p / "labels").is_dir(), recursive=False)
+                if estimate:
+                    loose.image_count = count_images(img_root, recursive=False)
+                    loose.label_count = count_labels(p / "labels", recursive=False)
+                lay.sources.append(loose)
+                lay.notes.append("Images directly inside images/ (outside the split folders) are indexed without a split")
         else:
             lay = Layout(kind="flat", root=str(p))
             lay.sources.append(_mk_dir_source("", img_root, p / "labels", estimate=estimate))

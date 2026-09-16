@@ -313,6 +313,8 @@ def write_data_yaml(dataset_root: str, names: List[str], layout: dict) -> str:
             doc = loaded
     splits: Dict[str, List[str]] = {}
     for s in layout.get("sources", []):
+        if s.get("recursive") is False:
+            continue        # loose files beside split folders: a YOLO directory entry would pull in every split
         split = s.get("split") or "train"
         if s.get("list_file"):
             value = to_host(s["list_file"])

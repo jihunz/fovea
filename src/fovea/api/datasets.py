@@ -464,20 +464,41 @@ def sequences(ds_id: str, split: Optional[str] = Query(None), limit: int = Query
 
 # ------------------------------------------------------------------ files
 
-def _safe_child(root: Path, rel: str) -> Path:
-    cand = (root / rel).resolve() if rel else root.resolve()
-    try:
-        cand.relative_to(root.resolve())
-    except ValueError:
+def _dataset_bases(row: dict) -> List[Path]:
+    bases = [Path(row["root"]).resolve()]
+    for s in (db.loads(row["layout"], {}) or {}).get("sources", []):
+        for k in ("img_dir", "label_dir", "base"):
+            if s.get(k):
+                bases.append(Path(s[k]).resolve())
+    return bases
+
+
+def _safe_child(row: dict, rel: str) -> Path:
+    """A path inside the dataset, as the user sees it (symlinks unresolved).
+
+    Containment is checked on the resolved target, which may lie under the dataset root OR under one of its
+    own source folders — so `images/train -> /data/train` works — while a link to anywhere else (say, a
+    `notes -> /etc` shipped inside a downloaded dataset) is still refused: this endpoint returns content."""
+    root = Path(row["root"])
+    parts = [x for x in PurePosixPath(rel or "").parts if x not in ("", ".")]
+    if (rel or "").startswith("/") or ".." in parts:
         raise HTTPException(400, "Path escapes dataset root")
-    return cand
+    cand = root.joinpath(*parts)
+    real = cand.resolve()
+    for base in _dataset_bases(row):
+        try:
+            real.relative_to(base)
+            return cand
+        except ValueError:
+            continue
+    raise HTTPException(400, "Path escapes dataset root")
 
 
 @router.get("/{ds_id}/files")
 def list_files(ds_id: str, path: str = Query("")):
     row = get_dataset_or_404(ds_id)
     root = Path(row["root"])
-    d = _safe_child(root, path.strip("/"))
+    d = _safe_child(row, path.strip("/"))
     if not d.is_dir():
         raise HTTPException(404, "Not a directory")
     entries = []
@@ -510,8 +531,7 @@ def list_files(ds_id: str, path: str = Query("")):
 @router.get("/{ds_id}/file")
 def get_file(ds_id: str, path: str = Query(...), raw: int = Query(0)):
     row = get_dataset_or_404(ds_id)
-    root = Path(row["root"])
-    p = _safe_child(root, path.strip("/"))
+    p = _safe_child(row, path.strip("/"))
     if not p.is_file():
         raise HTTPException(404, "File not found")
     if p.suffix.lower() in IMAGE_EXTS:
