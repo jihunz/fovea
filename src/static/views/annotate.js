@@ -52,7 +52,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   tools.appendChild(h('div', { class: 'sec' }, h('h4', 'Tools'), toolRow));
   tools.appendChild(h('div', { class: 'sec' }, h('h4', 'Classes', h('span', { class: 'spacer' }), h('span', { class: 'xs faint' }, '0–9 hotkeys')), classList, h('div', { class: 'mt-8' }, newClassInput)));
   tools.appendChild(h('div', { class: 'sec' }, h('h4', 'Options'),
-    h('div', { class: 'row', style: 'justify-content:space-between;padding:3px 0' }, h('span', { class: 'small' }, 'Propagate boxes to next unlabeled'), propagateSw),
+    h('div', { class: 'row', style: 'justify-content:space-between;padding:3px 0' }, h('span', { class: 'small' }, 'Propagate boxes to next unlabeled', h('span', { class: 'hint', style: 'display:block' }, 'when stepping forward one frame')), propagateSw),
     h('div', { class: 'row', style: 'justify-content:space-between;padding:3px 0' }, h('span', { class: 'small' }, 'Show labels (L)'), labelsSw),
     pointOpts));
   tools.appendChild(h('div', { class: 'sec' }, h('h4', icon('sparkles', 13), 'AI auto-label'), aiPanel));
@@ -323,7 +323,11 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     if (i < 0) return;
     stopAutoIfEnd(i);
     await flush();
-    const prevBoxes = boxes.map(b => [...b]);
+    // "Propagate boxes to next unlabeled" means exactly that: stepping forward one frame. Jumping to
+    // a search hit, an index, a mark or "next unlabeled" must NOT stamp the current boxes onto a
+    // distant image — that silently writes a label file the user never looked at.
+    const isNextFrame = idx >= 0 && i === idx + 1;
+    const prevBoxes = isNextFrame ? boxes.map(b => [...b]) : [];
     const it = await cursor.ensure(i);
     if (!it) return;
     idx = i; item = it; sel = -1; hover = -1; undo = []; redo = []; drag = null; dirty = false;
@@ -333,8 +337,11 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     const [labels] = await Promise.all([fovea.api.get(`/api/datasets/${ds.id}/images/${it.id}/labels`).catch(() => ({ boxes: [] })), loadImage(it.id)]);
     if (item !== it) return;
     boxes = (labels.boxes || []).map(b => b.slice(0, 5));
-    // propagate: next frame has no boxes (missing or empty label) → carry the previous boxes over
-    if (!boxes.length && opts.propagate && prevBoxes.length) { boxes = prevBoxes; dirty = true; setSaveState('dirty'); clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 400); }
+    // propagate: the next frame has no boxes (missing or empty label) → carry the previous ones over
+    if (!boxes.length && opts.propagate && prevBoxes.length) {
+      boxes = prevBoxes; dirty = true; setSaveState('dirty');
+      clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 400);
+    }
     if (!(customView && prevDims && img && prevDims[0] === img.naturalWidth && prevDims[1] === img.naturalHeight)) fit();
     prevDims = img ? [img.naturalWidth, img.naturalHeight] : null;
     renderBoxes(); updateHud(); draw();
