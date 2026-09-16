@@ -14,6 +14,15 @@ from .api import ai, datasets, export, fs, images, jobs as jobs_api, meta
 from .config import CONTAINER_MOUNT, HOST_PATH, STATIC_DIR, TEMPLATE_DIR
 from .plugin_api import discover
 
+class RevalidatingStatic(StaticFiles):
+    """Static files that always revalidate (ETag/Last-Modified) so UI updates are picked up immediately."""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 app = FastAPI(title="Fovea", version=__version__, docs_url="/api/docs", redoc_url=None, openapi_url="/api/openapi.json")
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
@@ -21,7 +30,7 @@ db.init_db()
 # recover datasets interrupted mid-scan by a previous process
 db.execute("UPDATE datasets SET status = CASE WHEN image_count > 0 THEN 'ready' ELSE 'new' END WHERE status='scanning'")
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/static", RevalidatingStatic(directory=str(STATIC_DIR)), name="static")
 for r in (meta.router, fs.router, datasets.router, images.router, ai.router, export.router, jobs_api.router):
     app.include_router(r)
 
@@ -30,7 +39,7 @@ for p in PLUGINS:
     if p.router is not None:
         app.include_router(p.router, prefix=f"/api/plugins/{p.id}", tags=[f"plugin:{p.id}"])
     if p.static_dir and Path(p.static_dir).is_dir():
-        app.mount(f"/plugins/{p.id}", StaticFiles(directory=str(p.static_dir)), name=f"plugin-{p.id}")
+        app.mount(f"/plugins/{p.id}", RevalidatingStatic(directory=str(p.static_dir)), name=f"plugin-{p.id}")
 meta.set_plugins(PLUGINS)
 
 

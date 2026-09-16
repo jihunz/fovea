@@ -56,8 +56,11 @@ async function render(el, { dataset, fovea }) {
     ui.toast(`ZIP ready (${fmt.bytes(blob.size)})`, { type: 'ok' });
   }
   async function copyTo() {
-    const target = await fovea.pickPath({ title: 'Choose target folder (a new folder will be filled)', files: false, selectFiles: false });
-    if (!target) return;
+    const parent = await fovea.pickPath({ title: 'Choose where to create the export folder', files: false, selectFiles: false });
+    if (!parent) return;
+    const name = await ui.prompt({ title: 'Export folder name', label: `Created inside ${parent}`, value: `${ds.id}-subset` });
+    if (name == null || !name.trim()) return;
+    const target = parent.replace(/[\/\\]+$/, '') + '/' + name.trim();
     try {
       const { job } = await fovea.api.post(`/api/datasets/${ds.id}/export/copy`, { filters: filtersOf(), target_dir: target, resize: resizeSpec(), include_unlabeled: f.includeUnlabeled, include_yaml: f.yaml });
       const bar = ui.progress(0); const txt = h('span', { class: 'small muted' }, 'Copying…');

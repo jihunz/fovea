@@ -1,9 +1,11 @@
 // Home: dataset registry cards + Add dataset wizard + file browser picker.
+import { thumbPx, trackImage } from '../lib/media.js';
+
 let F;
 export function install(fovea) { F = fovea; F.openAddDataset = openAddDataset; F.pickPath = pickPath; }
 
 export async function render(ctx, fovea) {
-  const { h, icon, logo, fmt, ui, link } = fovea;
+  const { h, icon, logo, fmt, ui, link, cls } = fovea;
   const page = h('div', { class: 'page' });
   const inner = h('div', { class: 'page-inner' });
   page.appendChild(inner);
@@ -26,14 +28,25 @@ export async function render(ctx, fovea) {
     const pct = (n) => total ? (100 * n / total) + '%' : '0%';
     const reviewed = (rv.approved || 0) + (rv.flagged || 0) + (rv.excluded || 0);
     const kind = (d.layout && d.layout.kind) || '';
-    const cover = d.cover_image_id ? h('img', { src: fovea.api.thumbUrl(d.cover_image_id, 512), loading: 'lazy', alt: '' }) : h('div', { class: 'row', style: 'height:100%;justify-content:center;color:#666' }, icon('images', 28));
-    const el = h('div', { class: 'ds-card', onClick: () => fovea.router.navigate(`/d/${d.id}`) },
+    const reach = d.reachable || { ok: true };
+    let cover;
+    if (d.cover_image_id) {
+      // Card covers are few and above the fold — load them straight away rather than leaving it to
+      // the lazy heuristic, which can leave a registry page full of blank cards.
+      const cimg = h('img', { src: fovea.api.thumbUrl(d.cover_image_id, thumbPx(320)), decoding: 'async', alt: '' });
+      cover = h('div', { class: 'pic' }, cimg);
+      trackImage(cimg, cover);
+    } else {
+      cover = h('div', { class: 'row', style: 'height:100%;justify-content:center;color:#666' }, icon('images', 28));
+    }
+    const el = h('div', { class: cls('ds-card', !reach.ok && 'unreachable'), onClick: () => fovea.router.navigate(`/d/${d.id}`) },
       h('div', { class: 'cover' }, cover, ui.chip(kind, { cls: 'kind', type: 'accent' }),
         h('button', { class: 'btn btn-sm btn-icon menu-btn', onClick: (e) => { e.stopPropagation(); cardMenu(e.currentTarget, d); } }, icon('moreH', 14))),
       h('div', { class: 'body' },
         h('div', { class: 'name' }, d.name, h('span', { class: `status-pill` }, h('span', { class: `dot ${d.status}` }))),
         h('div', { class: 'path truncate', title: d.root_host }, d.root_host),
         d.status === 'scanning' || (d.job && d.job.status === 'running') ? ui.progress(d.job ? d.job.progress : 0, { indeterminate: !d.job || !d.job.total }) : null,
+        !reach.ok ? h('div', { class: 'warn-row' }, icon('alert', 13), h('span', { class: 'truncate' }, 'Files not found at this path')) : null,
         h('div', { class: 'meta' }, h('span', h('b', fmt.num(total)), ' images'), h('span', h('b', fmt.num(d.label_count)), ' labeled'), h('span', h('b', fmt.num(d.box_count)), ' boxes'), h('span', h('b', (d.classes || []).length), ' classes')),
         h('div', { class: 'review-bar', 'data-tip': `Approved ${rv.approved || 0} · Flagged ${rv.flagged || 0} · Excluded ${rv.excluded || 0}` }, h('i', { class: 'a', style: `width:${pct(rv.approved || 0)}` }), h('i', { class: 'f', style: `width:${pct(rv.flagged || 0)}` }), h('i', { class: 'x', style: `width:${pct(rv.excluded || 0)}` })),
         h('div', { class: 'foot' }, h('span', `${fmt.pct(reviewed, total)} reviewed`), h('span', '·'), h('span', (d.splits || []).filter(Boolean).join(' / ') || 'no splits'), h('span', { class: 'spacer' }), h('span', fmt.ago(d.opened_at || d.created_at))),
@@ -49,6 +62,7 @@ export async function render(ctx, fovea) {
       { sep: true },
       { label: 'Rescan', icon: 'refresh', onClick: () => rescan(d.id, false) },
       { label: 'Re-detect layout & rescan', icon: 'scan', onClick: () => rescan(d.id, true) },
+      { label: 'Move to a new path…', icon: 'folderOpen', onClick: () => relocate(d) },
       { label: 'Copy path', icon: 'copy', onClick: () => ui.copyText(d.root_host) },
       { sep: true },
       { label: 'Remove from Fovea', icon: 'trash', danger: true, onClick: async () => {
@@ -56,6 +70,16 @@ export async function render(ctx, fovea) {
           await fovea.api.del(`/api/datasets/${d.id}`); ui.toast('Dataset removed'); datasets = await fovea.loadDatasets(); renderGrid();
         } } },
     ]);
+  }
+
+  async function relocate(d) {
+    const p = await pickPath({ title: `Where is “${d.name}” now?`, files: true, start: d.root_host, accept: ['.yaml', '.yml', '.txt'] });
+    if (!p) return;
+    try {
+      await fovea.api.post(`/api/datasets/${d.id}/relocate`, { path: p });
+      ui.toast('Re-indexing from the new path…', { type: 'ok' });
+      datasets = await fovea.loadDatasets(); renderGrid();
+    } catch (e) { ui.toast(e.message, { type: 'error' }); }
   }
 
   async function rescan(id, redetect) {
@@ -102,9 +126,9 @@ export function pickPath({ title = 'Choose a folder', files = true, start = '', 
       } catch (e) { list.innerHTML = ''; list.appendChild(h('div', { class: 'empty' }, h('p', e.message))); }
     };
     let api;
-    const done = (p) => { api.close(); resolve(p); };
+    const done = (p) => api.close(p);  // close(result) → onClose(result) resolves exactly once
     api = ui.modal({
-      title, size: 'lg', onClose: () => resolve(null),
+      title, size: 'lg', onClose: (r) => resolve(typeof r === 'string' && r ? r : null),
       body: h('div', { class: 'fb' },
         h('div', { class: 'fb-path' }, icon('folderOpen', 16), pathInput, h('button', { class: 'btn', onClick: () => load(pathInput.value.trim()) }, 'Go')),
         list, status),
@@ -117,21 +141,26 @@ export function pickPath({ title = 'Choose a folder', files = true, start = '', 
 
 // ------------------------------------------------------------------ add dataset wizard
 export function openAddDataset(prefillPath = '') {
+  if (typeof prefillPath !== 'string') prefillPath = '';  // may be called as a click handler
   const { h, icon, ui, fmt } = F;
   let detected = null;
   const pathInput = h('input', { class: 'input mono', placeholder: '/data/my-dataset  ·  data.yaml  ·  train.txt', value: prefillPath });
   const nameInput = h('input', { class: 'input', placeholder: 'Dataset name' });
   const idInput = h('input', { class: 'input mono', placeholder: 'dataset-id' });
   const result = h('div');
-  const detectBtn = h('button', { class: 'btn', onClick: () => detect() }, icon('scan', 14), 'Detect');
+  const detectBtn = h('button', { class: 'btn', onClick: () => detect(true) }, icon('scan', 14), 'Detect');
   let registerBtn;
 
-  async function detect() {
+  let lastDetected = null;
+  async function detect(force = false) {
     const p = pathInput.value.trim(); if (!p) return;
+    if (!force && p === lastDetected) return;  // blur after Enter must not re-render (it moves the Register button under the cursor)
+    lastDetected = p;
     detectBtn.disabled = true; result.innerHTML = ''; result.appendChild(h('div', { class: 'row small faint' }, ui.spinner(), 'Detecting layout…'));
     try {
       const res = await F.api.get('/api/fs/detect', { path: p });
       detected = res;
+      lastDetected = p;
       const lay = res.layout;
       if (!nameInput.value) nameInput.value = res.suggested_name;
       if (!idInput.value) idInput.value = res.suggested_id;
@@ -148,7 +177,7 @@ export function openAddDataset(prefillPath = '') {
         lay.notes.map(n => h('div', { class: 'callout warn small' }, icon('info', 14), n)),
       ));
       registerBtn.disabled = bad;
-    } catch (e) { result.innerHTML = ''; result.appendChild(h('div', { class: 'callout danger' }, icon('alertCircle'), e.message)); registerBtn.disabled = true; }
+    } catch (e) { lastDetected = null; result.innerHTML = ''; result.appendChild(h('div', { class: 'callout danger' }, icon('alertCircle'), e.message)); registerBtn.disabled = true; }
     finally { detectBtn.disabled = false; }
   }
 

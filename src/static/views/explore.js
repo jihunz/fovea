@@ -1,5 +1,6 @@
 // Explore tab: filterable gallery + Inspect overlay + review actions.
 import { ISSUE_LABELS } from './issues.js';
+import { thumbPx, trackImage, createImageLoader } from '../lib/media.js';
 
 export function install(fovea) { fovea.registerTab({ id: 'explore', label: 'Explore', icon: 'grid', order: 20, render }); }
 
@@ -23,7 +24,7 @@ async function render(el, { ctx, dataset, fovea }) {
   const root = h('div', { class: 'explore' });
   const toolbar = h('div', { class: 'explore-toolbar' });
   const body = h('div', { class: 'explore-body' });
-  const grid = h('div', { class: 'grid', style: `--tile:${TILE_PX[tileSize]}px` });
+  const grid = h('div', { class: cls('grid', !showOverlay && 'no-overlay'), style: `--tile:${TILE_PX[tileSize]}px` });
   const sentinel = h('div', { class: 'load-more' });
   const countEl = h('span', { class: 'result-count' });
   const bulk = h('div', { class: 'bulk-bar hidden' });
@@ -48,7 +49,13 @@ async function render(el, { ctx, dataset, fovea }) {
   const sortSel = select([['id', 'Order: index'], ['name', 'Order: name'], ['boxes', 'Order: boxes'], ['size', 'Order: resolution'], ['mtime', 'Order: modified'], ['reviewed', 'Order: reviewed'], ['random', 'Order: random']], sort, v => { sort = v; reload(); });
   const orderBtn = h('button', { class: 'btn btn-icon', 'data-tip': 'Toggle direction', onClick: () => { order = order === 'asc' ? 'desc' : 'asc'; orderBtn.innerHTML = ''; orderBtn.appendChild(icon(order === 'asc' ? 'arrowUp' : 'arrowDown', 14)); reload(); } }, icon(order === 'asc' ? 'arrowUp' : 'arrowDown', 14));
   const overlayBtn = h('button', { class: cls('btn btn-icon', showOverlay && 'active'), 'data-tip': 'Toggle box overlay (O)', onClick: () => toggleOverlay() }, icon('square', 14));
-  const sizeSeg = ui.seg([{ value: 's', label: 'S' }, { value: 'm', label: 'M' }, { value: 'l', label: 'L' }, { value: 'xl', label: 'XL' }], tileSize, (v) => { tileSize = v; localStorage.setItem('fovea.tile', v); grid.style.setProperty('--tile', TILE_PX[v] + 'px'); });
+  const sizeSeg = ui.seg([{ value: 's', label: 'S' }, { value: 'm', label: 'M' }, { value: 'l', label: 'L' }, { value: 'xl', label: 'XL' }], tileSize, (v) => {
+    const before = thumbPx(TILE_PX[tileSize]);
+    tileSize = v; localStorage.setItem('fovea.tile', v); grid.style.setProperty('--tile', TILE_PX[v] + 'px');
+    // Only re-request when the size bucket actually changes (S↔M share one), and then swap the src
+    // in place: rebuilding the tiles would drop every decoded image and re-download the whole page.
+    if (thumbPx(TILE_PX[v]) !== before) rescaleTiles();
+  });
   toolbar.appendChild(h('div', { class: 'input-wrap' }, icon('search'), searchInput));
   toolbar.appendChild(splitSeg); toolbar.appendChild(clsBtn); toolbar.appendChild(labeledSel); toolbar.appendChild(reviewSel); toolbar.appendChild(issueSel);
   toolbar.appendChild(h('span', { class: 'spacer' }));
@@ -64,6 +71,7 @@ async function render(el, { ctx, dataset, fovea }) {
   // ---------------------------------------------------------------- data
   const tiles = new Map(); // index -> element
   async function reload() {
+    if (inspect) inspect.close();
     syncUrl(); updateClsLabel();
     selected.clear(); focusIdx = -1; updateBulk();
     cursor = new fovea.ImageCursor({ dsId: ds.id, filters: activeFilters(), sort, order, pageSize: 100, boxes: true });
@@ -88,17 +96,25 @@ async function render(el, { ctx, dataset, fovea }) {
   }
   const io = new IntersectionObserver((entries) => { if (entries.some(e => e.isIntersecting)) loadMore(); }, { root: body, rootMargin: '600px' });
   io.observe(sentinel);
+  const imgLoader = createImageLoader({ root: body, margin: '800px' });
 
   // ---------------------------------------------------------------- tiles
   function appendTile(index, it) {
     const t = tile(index, it);
     tiles.set(index, t);
     grid.appendChild(t);
+    imgLoader.observe(t._img, t._pic, t);
   }
   function tile(index, it) {
     const el = h('div', { class: cls('tile', selected.has(it.id) && 'selected', focusIdx === index && 'focus'), 'data-review': it.review ? it.review.status : '', 'data-idx': index });
-    const pic = h('div', { class: 'pic', style: it.width && it.height ? `aspect-ratio:${it.width}/${it.height}` : '' }, h('img', { src: fovea.api.thumbUrl(it.id, tileSize === 'xl' || tileSize === 'l' ? 512 : 256), loading: 'lazy', decoding: 'async', alt: '' }));
-    if (showOverlay && it.boxes && it.boxes.length) pic.appendChild(fovea.boxLayer(it.boxes, { names, stroke: 1.5 }));
+    // No loading="lazy": the browser heuristic can defer in-viewport images indefinitely. `imgLoader`
+    // decides, using the same scroll container the gallery already observes for paging.
+    const img = h('img', { decoding: 'async', alt: '', dataset: { src: fovea.api.thumbUrl(it.id, thumbPx(TILE_PX[tileSize])) } });
+    const pic = h('div', { class: 'pic', style: it.width && it.height ? `aspect-ratio:${it.width}/${it.height}` : '' }, img);
+    el._img = img; el._pic = pic;   // observed by appendTile/refreshTile once inserted
+    // The overlay is always attached when there are boxes; `.grid.no-overlay` and the loading state
+    // control whether it is visible, so toggling never re-requests an image.
+    if (it.boxes && it.boxes.length) pic.appendChild(fovea.boxLayer(it.boxes, { names, stroke: 1.5 }));
     pic.style.width = '100%'; pic.style.height = '100%';
     // fit within frame: use object-fit via wrapper sizing
     const frame = h('div', { class: 'frame' }, fitWrap(pic, it));
@@ -121,7 +137,37 @@ async function render(el, { ctx, dataset, fovea }) {
     wrap.appendChild(pic);
     return wrap;
   }
-  function refreshTile(index) { const old = tiles.get(index); const it = cursor.items[index]; if (!old || !it) return; const n = tile(index, it); tiles.set(index, n); old.replaceWith(n); }
+  function refreshTile(index) {
+    const old = tiles.get(index); const it = cursor.items[index];
+    if (!old || !it) return;
+    const n = tile(index, it); tiles.set(index, n); old.replaceWith(n);
+    imgLoader.observe(n._img, n._pic, n);
+  }
+  /** Point every loaded tile at a different thumbnail size without rebuilding it. The browser keeps
+      showing the current frame until the new one decodes, so there is no flash back to a skeleton. */
+  function rescaleTiles() {
+    const size = thumbPx(TILE_PX[tileSize]);
+    for (const [idx, el] of tiles) {
+      const it = cursor.items[idx]; if (!it) continue;
+      const img = el.querySelector('img'); const pic = el.querySelector('.pic');
+      if (!img || !pic) continue;
+      const next = fovea.api.thumbUrl(it.id, size);
+      if (img.getAttribute('src') === next) continue;
+      if (img.dataset.src) { img.dataset.src = next; continue; }   // not requested yet — just retarget
+      if (pic.classList.contains('is-loading')) { img.src = next; trackImage(img, pic); continue; }
+      // Already showing something: swap without reverting to the skeleton, but still catch a failure.
+      img.addEventListener('error', () => { pic.classList.remove('is-ready'); pic.classList.add('is-error'); }, { once: true });
+      img.src = next;
+    }
+  }
+  /** Reflect a review change without rebuilding the tile — a rebuild re-creates the <img> and makes the thumbnail blink. */
+  function updateTileReview(index) {
+    const el = tiles.get(index); const it = cursor.items[index];
+    if (!el || !it) return;
+    el.dataset.review = it.review ? it.review.status : '';
+    const rv = el.querySelector('.rv');
+    if (rv) { rv.innerHTML = ''; rv.appendChild(icon(it.review ? REVIEW[it.review.status].icon : 'check', 12)); }
+  }
   function tileMenu(pos, index, it) {
     ui.menu(pos, [
       { label: 'Inspect', icon: 'eye', onClick: () => openInspect(index), kbd: '↵' },
@@ -136,7 +182,13 @@ async function render(el, { ctx, dataset, fovea }) {
       { label: 'Open original', icon: 'external', onClick: () => window.open(fovea.api.imgUrl(it.id), '_blank') },
     ]);
   }
-  function toggleOverlay() { showOverlay = !showOverlay; localStorage.setItem('fovea.overlay', showOverlay ? '1' : '0'); overlayBtn.classList.toggle('active', showOverlay); for (const idx of tiles.keys()) refreshTile(idx); if (inspect) inspect.draw(); }
+  function toggleOverlay() {
+    showOverlay = !showOverlay;
+    localStorage.setItem('fovea.overlay', showOverlay ? '1' : '0');
+    overlayBtn.classList.toggle('active', showOverlay);
+    grid.classList.toggle('no-overlay', !showOverlay);   // pure CSS — tiles and their images are untouched
+    if (inspect) inspect.draw();
+  }
 
   // ---------------------------------------------------------------- selection & review
   function toggleSelect(index, it, range = false) {
@@ -170,7 +222,7 @@ async function render(el, { ctx, dataset, fovea }) {
     try {
       await fovea.api.put(`/api/datasets/${ds.id}/review`, { image_ids: ids, status, note: note || '' });
       const set = new Set(ids);
-      cursor.items.forEach((it, idx) => { if (it && set.has(it.id)) { it.review = status ? { status, note: note || '', updated_at: Date.now() / 1000 } : null; if (tiles.has(idx)) refreshTile(idx); } });
+      cursor.items.forEach((it, idx) => { if (it && set.has(it.id)) { it.review = status ? { status, note: note || '', updated_at: Date.now() / 1000 } : null; updateTileReview(idx); } });
       fovea.bus.emit('review:changed', { ids, status });
       if (inspect) inspect.draw();
       ui.toast(status ? `${REVIEW[status].label}: ${ids.length} image${ids.length > 1 ? 's' : ''}` : `Cleared ${ids.length}`, { timeout: 1200 });
@@ -248,6 +300,7 @@ async function render(el, { ctx, dataset, fovea }) {
       picHolder.innerHTML = '';
       const img = h('img', { src: fovea.api.imgUrl(item.id), alt: '', draggable: false });
       picHolder.appendChild(img);
+      trackImage(img, picHolder);
       if (showOverlay && item.boxes && item.boxes.length) picHolder.appendChild(fovea.boxLayer(item.boxes, { names, labels: showLabels, active: activeBox, onClick: (i) => { activeBox = i; draw(); } }));
       overlayToggle.classList.toggle('active', showOverlay);
       // side panel
@@ -299,5 +352,5 @@ async function render(el, { ctx, dataset, fovea }) {
   await reload();
   const offScan = fovea.bus.on('dataset:scanned', (id) => { if (id === ds.id) reload(); });
   const offLabels = fovea.bus.on('labels:changed', ({ item }) => { if (!cursor) return; const i = cursor.indexOfId(item.id); if (i >= 0) { cursor.items[i] = { ...cursor.items[i], ...item }; refreshTile(i); } });
-  return () => { destroyed = true; document.removeEventListener('keydown', onKey); io.disconnect(); if (inspect) inspect.close(); offScan(); offLabels(); };
+  return () => { destroyed = true; document.removeEventListener('keydown', onKey); io.disconnect(); imgLoader.dispose(); if (inspect) inspect.close(); offScan(); offLabels(); };
 }

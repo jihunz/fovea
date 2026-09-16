@@ -25,6 +25,7 @@
   --info: #2563eb; --info-soft: #e7eefc;
   --approve: #16a34a; --flag: #d97706; --exclude: #dc2626;
   --stage: #0d0e10;
+  --tile-bg: #e7e7e3;
   --shadow-sm: 0 1px 2px rgba(16, 18, 20, 0.06), 0 1px 1px rgba(16, 18, 20, 0.04);
   --shadow-md: 0 4px 14px rgba(16, 18, 20, 0.10), 0 1px 3px rgba(16, 18, 20, 0.06);
   --shadow-lg: 0 18px 50px rgba(16, 18, 20, 0.22), 0 4px 12px rgba(16, 18, 20, 0.08);
@@ -55,6 +56,7 @@
   --info: #60a5fa; --info-soft: rgba(96,165,250,.15);
   --approve: #22c55e; --flag: #f59e0b; --exclude: #ef4444;
   --stage: #08090a;
+  --tile-bg: #101114;
   --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
   --shadow-md: 0 4px 14px rgba(0,0,0,.5);
   --shadow-lg: 0 18px 50px rgba(0,0,0,.7);
@@ -68,7 +70,7 @@
     --accent: #2dd4bf; --accent-hover: #5eead4; --accent-soft: rgba(45,212,191,.13); --accent-text: #5eead4; --accent-ring: rgba(45,212,191,.32);
     --ok: #22c55e; --ok-soft: rgba(34,197,94,.15); --warn: #f59e0b; --warn-soft: rgba(245,158,11,.15);
     --danger: #ef4444; --danger-soft: rgba(239,68,68,.16); --info: #60a5fa; --info-soft: rgba(96,165,250,.15);
-    --approve: #22c55e; --flag: #f59e0b; --exclude: #ef4444; --stage: #08090a;
+    --approve: #22c55e; --flag: #f59e0b; --exclude: #ef4444; --stage: #08090a; --tile-bg: #101114;
     --shadow-sm: 0 1px 2px rgba(0,0,0,.4); --shadow-md: 0 4px 14px rgba(0,0,0,.5); --shadow-lg: 0 18px 50px rgba(0,0,0,.7);
     color-scheme: dark;
   }
@@ -135,7 +137,7 @@ button { cursor: pointer; }
 .sb-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sb-item .count { font-size: 11px; color: var(--text-3); font-family: var(--mono); }
 .sb-item .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }
-.sb-item .dot.ready { background: var(--ok); } .sb-item .dot.scanning { background: var(--warn); animation: blink 1s infinite; } .sb-item .dot.error { background: var(--danger); }
+.sb-item .dot.ready { background: var(--ok); } .sb-item .dot.scanning { background: var(--warn); animation: blink 1s infinite; } .sb-item .dot.error, .sb-item .dot.unreachable { background: var(--danger); }
 .sb-datasets { flex: 1; min-height: 0; overflow-y: auto; }
 .sb-footer { padding: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
 .sb-kbd-hint { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; color: var(--text-3); font-size: 11.5px; }
@@ -241,7 +243,7 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .status-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
 .status-pill .dot.ready { background: var(--ok); } .status-pill .dot.scanning { background: var(--warn); animation: blink 1s infinite; }
-.status-pill .dot.new { background: var(--text-3); } .status-pill .dot.error { background: var(--danger); }
+.status-pill .dot.new { background: var(--text-3); } .status-pill .dot.error, .status-pill .dot.unreachable { background: var(--danger); }
 @keyframes blink { 50% { opacity: .35; } }
 
 /* ---------------------------------------------------------------- cards, tables */
@@ -341,8 +343,12 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .ds-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .ds-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--shadow-sm); cursor: pointer; transition: border-color .12s, box-shadow .12s, transform .12s; display: flex; flex-direction: column; }
 .ds-card:hover { border-color: var(--accent); box-shadow: var(--shadow-md); transform: translateY(-1px); }
-.ds-card .cover { aspect-ratio: 16 / 9; background: var(--stage); position: relative; overflow: hidden; }
+.ds-card .cover { aspect-ratio: 16 / 9; background: var(--tile-bg); position: relative; overflow: hidden; }
 .ds-card .cover img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: .95; }
+.ds-card .cover .pic { position: absolute; inset: 0; }
+.ds-card .cover .pic.is-error::after { content: '⚠ files not found'; font-size: 11px; font-weight: 500; }
+.ds-card.unreachable .cover { opacity: .5; }
+.ds-card .warn-row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--warn); }
 .ds-card .cover .kind { position: absolute; left: 8px; top: 8px; }
 .ds-card .cover .menu-btn { position: absolute; right: 6px; top: 6px; opacity: 0; }
 .ds-card:hover .cover .menu-btn { opacity: 1; }
@@ -412,10 +418,31 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .tile:hover { border-color: var(--text-3); box-shadow: var(--shadow-md); }
 .tile.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring), var(--shadow-md); }
 .tile.focus { outline: 2px solid var(--accent); outline-offset: -2px; }
-.tile .frame { aspect-ratio: 4 / 3; background: var(--stage); display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+.tile .frame { aspect-ratio: 4 / 3; background: var(--tile-bg); display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
 .tile .frame .pic { position: relative; max-width: 100%; max-height: 100%; }
 .tile .frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .tile .frame svg.ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+/* --- image load states (see static/lib/media.js) ------------------------------------------------
+   Without these, a tile that has not painted yet is a black rectangle with box outlines floating
+   on it, and a thumbnail that fails stays black forever with no explanation. */
+.pic.is-loading { background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%); background-size: 400% 100%; animation: shimmer 1.3s infinite; }
+/* never draw boxes on top of an image that is not there yet — that is what "broken" looks like */
+.pic.is-idle > img, .pic.is-loading > img { opacity: 0; }
+.pic.is-idle > .ov, .pic.is-loading > .ov, .pic.is-error > .ov { opacity: 0; }
+.pic.is-ready > img { opacity: 1; animation: imgIn .18s ease-out; }
+@keyframes imgIn { from { opacity: 0; } }
+.pic.is-error { background: var(--surface-2); display: flex; align-items: center; justify-content: center; }
+.pic.is-error > img, .pic.is-error > .ov { display: none; }
+.pic.is-error::after {
+  content: '⚠';
+  font-size: 18px; line-height: 1; color: var(--warn);
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+}
+.tile .pic.is-error::after { content: '⚠ file missing'; font-size: 11px; font-weight: 500; gap: 4px; text-align: center; padding: 0 6px; }
+.grid.no-overlay .ov { display: none; }
+
 .tile .meta { display: flex; align-items: center; gap: 6px; padding: 6px 8px; font-size: 11.5px; color: var(--text-2); }
 .tile .meta .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; }
 .tile .badges { position: absolute; left: 6px; top: 6px; display: flex; gap: 4px; }
@@ -525,7 +552,7 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .files-list { overflow: auto; border-right: 1px solid var(--border); }
 .files-preview { overflow: auto; background: var(--surface-2); padding: 14px; }
 .files-preview pre { margin: 0; font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; word-break: break-all; color: var(--text); }
-.files-preview img { max-width: 100%; border-radius: var(--r); background: var(--stage); }
+.files-preview img { max-width: 100%; border-radius: var(--r); background: var(--tile-bg); }
 .file-row { display: flex; align-items: center; gap: 9px; padding: 6px 16px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 12.5px; }
 .file-row:hover { background: var(--surface-2); }
 .file-row.active { background: var(--accent-soft); }
@@ -546,3 +573,15 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
   .inspect { grid-template-columns: 1fr; } .inspect-side { display: none; }
   .ann { grid-template-columns: 200px 1fr; } .ann-side { display: none; }
 }
+
+/* narrower screens: keep the explore toolbar to two rows */
+@media (max-width: 1250px) {
+  .explore-toolbar .input-wrap { width: 160px; }
+  .explore-toolbar .select { max-width: 150px; }
+  .explore-toolbar .result-count { display: none; }
+}
+
+/* dataset-level "files are not on disk" banner */
+.ds-alert { display: flex; align-items: center; gap: 10px; padding: 9px 20px; background: var(--danger-soft); color: var(--danger); font-size: 12.5px; border-bottom: 1px solid var(--border); }
+.ds-alert .grow { color: var(--text); }
+.ds-alert .mono { color: var(--text-2); }

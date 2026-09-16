@@ -87,3 +87,100 @@ def test_matching_and_ap():
     assert pred_tp == [True, False, False] and gt_matched == [0, -1]
     assert average_precision([(0.9, True), (0.8, False), (0.7, True)], 2) == pytest.approx(0.8333, abs=1e-3)
     assert average_precision([], 3) == 0.0
+
+
+# --------------------------------------------------------------------------- unreachable datasets
+def _mini_dataset(tmp_path):
+    """A tiny ultralytics-layout dataset on disk."""
+    root = tmp_path / "ds"
+    for split in ("train", "val"):
+        _img(root / "images" / split / "a.jpg")
+        (root / "labels" / split).mkdir(parents=True, exist_ok=True)
+        (root / "labels" / split / "a.txt").write_text("0 0.5 0.5 0.2 0.2\n")
+    return root
+
+
+def test_scan_refuses_to_wipe_an_unreachable_dataset(tmp_path, monkeypatch):
+    """An index whose files have vanished (unmounted drive, moved folder, container paths opened on
+    the host) must fail loudly and keep its rows — never report success with 0 images."""
+    import uuid
+    from fovea import db
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    db.init_db()
+    root = _mini_dataset(tmp_path)
+    lay = layout.detect(str(root))
+    ds_id = "t-" + uuid.uuid4().hex[:8]
+    now = db.now()
+    db.execute(
+        "INSERT INTO datasets(id,name,root,layout,classes,classes_source,description,status,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (ds_id, ds_id, lay.root, db.dumps(lay.to_dict()), db.dumps([]), "inferred", "", "new", now, now),
+    )
+    try:
+        first = scan_dataset(ds_id, Job(id="j1", kind="scan"))
+        assert first["images"] == 2
+
+        # the whole dataset disappears
+        root.rename(tmp_path / "moved-away")
+        with pytest.raises(FileNotFoundError):
+            scan_dataset(ds_id, Job(id="j2", kind="scan"))
+
+        kept = db.query_one("SELECT COUNT(*) c FROM images WHERE dataset_id=?", (ds_id,))
+        assert kept["c"] == 2, "an unreachable rescan must not delete the index"
+        row = db.query_one("SELECT status FROM datasets WHERE id=?", (ds_id,))
+        assert row["status"] == "unreachable"
+
+        # and it recovers once the files are back
+        (tmp_path / "moved-away").rename(root)
+        again = scan_dataset(ds_id, Job(id="j3", kind="scan"))
+        assert again["images"] == 2
+    finally:
+        db.execute("DELETE FROM boxes WHERE dataset_id=?", (ds_id,))
+        db.execute("DELETE FROM images WHERE dataset_id=?", (ds_id,))
+        db.execute("DELETE FROM datasets WHERE id=?", (ds_id,))
+
+
+def test_check_reachable_samples_across_the_id_range(tmp_path):
+    """A few deleted files at the start of a dataset must not be reported as "everything is gone"."""
+    import uuid
+    from fovea import db
+    from fovea.api.common import check_reachable
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    db.init_db()
+    root = tmp_path / "many"
+    (root / "labels").mkdir(parents=True, exist_ok=True)
+    for i in range(12):
+        _img(root / "images" / f"{i:03d}.jpg")
+    lay = layout.detect(str(root))
+    ds_id = "r-" + uuid.uuid4().hex[:8]
+    now = db.now()
+    db.execute(
+        "INSERT INTO datasets(id,name,root,layout,classes,classes_source,description,status,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (ds_id, ds_id, lay.root, db.dumps(lay.to_dict()), db.dumps([]), "inferred", "", "new", now, now),
+    )
+    try:
+        scan_dataset(ds_id, Job(id="j", kind="scan"))
+        row = db.query_one("SELECT * FROM datasets WHERE id=?", (ds_id,))
+        assert check_reachable(row)["ok"] is True
+
+        # delete only the first two files — the dataset is still overwhelmingly present
+        for i in range(2):
+            (root / "images" / f"{i:03d}.jpg").unlink()
+        row = db.query_one("SELECT * FROM datasets WHERE id=?", (ds_id,))
+        probe = check_reachable(row)
+        assert probe["ok"] is True, "a biased head-of-list sample must not raise a false alarm"
+
+        # now delete everything
+        for p in (root / "images").iterdir():
+            p.unlink()
+        row = db.query_one("SELECT * FROM datasets WHERE id=?", (ds_id,))
+        assert check_reachable(row)["ok"] is False
+    finally:
+        db.execute("DELETE FROM boxes WHERE dataset_id=?", (ds_id,))
+        db.execute("DELETE FROM images WHERE dataset_id=?", (ds_id,))
+        db.execute("DELETE FROM datasets WHERE id=?", (ds_id,))

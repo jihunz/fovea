@@ -12,7 +12,7 @@ from PIL import Image
 from .. import db
 from ..config import IMAGE_EXTS, LABEL_EXT
 from ..jobs import Job
-from ..paths import resolve
+from ..paths import resolve, to_host
 from .labels import read_label_file
 from .layout import Layout, Source, is_image, label_path_for_image
 
@@ -137,11 +137,29 @@ def scan_dataset(dataset_id: str, job: Job) -> dict:
 
     db.execute("UPDATE datasets SET status='scanning', updated_at=? WHERE id=?", (db.now(), dataset_id))
 
-    entries: List[Tuple[str, str, str, str]] = []
+    # A source whose folder/list file has vanished (unmounted drive, moved dataset, an index built
+    # inside Docker and now read on the host) must NOT be treated as "this dataset is empty now" —
+    # that would delete every indexed row and report success. Detect it and fail loudly instead.
+    reachable, unreachable = [], []
     for src in layout.sources:
+        target = src.list_file or src.img_dir
+        (reachable if target and Path(target).exists() else unreachable).append(src)
+
+    if layout.sources and not reachable:
+        db.execute("UPDATE datasets SET status='unreachable', updated_at=? WHERE id=?", (db.now(), dataset_id))
+        missing = ", ".join(to_host(s.list_file or s.img_dir) for s in unreachable[:3])
+        raise FileNotFoundError(
+            f"Dataset files are not reachable — nothing was changed in the index. Missing: {missing}"
+            + (" …" if len(unreachable) > 3 else "")
+        )
+
+    entries: List[Tuple[str, str, str, str]] = []
+    for src in reachable:
         job.update(message=f"Listing {src.split or 'images'}…")
         entries.extend(enumerate_source(src))
     total = len(entries)
+    if unreachable:
+        job.update(message=f"{len(unreachable)} source(s) unreachable — keeping their existing rows")
     job.update(done=0, total=total, message="Indexing")
 
     existing: Dict[str, dict] = {}
@@ -212,9 +230,19 @@ def scan_dataset(dataset_id: str, job: Job) -> dict:
                 conn.execute("COMMIT")
                 job.update(done=idx + 1, message=f"Indexing {idx + 1:,}/{total:,}")
                 conn.execute("BEGIN")
-        conn.execute("DELETE FROM boxes WHERE dataset_id=? AND image_id IN (SELECT id FROM images WHERE dataset_id=? AND scan_token != ?)",
-                     (dataset_id, dataset_id, token))
-        conn.execute("DELETE FROM images WHERE dataset_id=? AND scan_token != ?", (dataset_id, token))
+        # Prune rows this pass did not re-see — but only within the splits we could actually read,
+        # so an unreachable source keeps its rows instead of being silently erased.
+        prune = "dataset_id=? AND scan_token != ?"
+        prune_args: List[object] = [dataset_id, token]
+        if unreachable:
+            keep = sorted({s.split or "" for s in reachable})
+            if not keep:
+                keep = [""]
+            prune += " AND split IN (%s)" % ",".join("?" * len(keep))
+            prune_args.extend(keep)
+        conn.execute(f"DELETE FROM boxes WHERE dataset_id=? AND image_id IN (SELECT id FROM images WHERE {prune})",
+                     [dataset_id] + prune_args)
+        conn.execute(f"DELETE FROM images WHERE {prune}", prune_args)
         conn.execute("COMMIT")
     except Exception:
         try:

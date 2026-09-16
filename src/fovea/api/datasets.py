@@ -68,6 +68,34 @@ def get_dataset(ds_id: str, touch: int = Query(0)):
     return {"dataset": dataset_public(row)}
 
 
+@router.post("/{ds_id}/relocate")
+def relocate_dataset(ds_id: str, payload: dict = Body(...)):
+    """Point an existing dataset at a new root and re-index it, keeping its id and review marks.
+    This is the repair path for an index whose files moved — a different machine, an unmounted
+    drive, or an index built inside Docker (container paths) now opened directly on the host."""
+    get_dataset_or_404(ds_id)
+    path = (payload.get("path") or "").strip()
+    if not path:
+        raise HTTPException(400, "path is required")
+    try:
+        lay = detect(path)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Could not detect layout: {e}")
+    if lay.kind == "unknown" or not lay.sources:
+        raise HTTPException(400, "; ".join(lay.notes) or "No dataset found at this path")
+
+    db.execute("UPDATE datasets SET root=?, layout=?, status='new', updated_at=? WHERE id=?",
+               (lay.root, db.dumps(lay.to_dict()), db.now(), ds_id))
+    # Stale rows still point at the old location; the rescan re-creates them from the new root.
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM boxes WHERE dataset_id=?", (ds_id,))
+        conn.execute("DELETE FROM images WHERE dataset_id=?", (ds_id,))
+    job = jobs.submit("scan", lambda j: scan_dataset(ds_id, j), dataset_id=ds_id, message="Queued")
+    return {"dataset": dataset_public(get_dataset_or_404(ds_id)), "job": job.to_dict()}
+
+
 @router.patch("/{ds_id}")
 def update_dataset(ds_id: str, payload: dict = Body(...)):
     row = get_dataset_or_404(ds_id)

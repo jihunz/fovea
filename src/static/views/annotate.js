@@ -333,7 +333,8 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     const [labels] = await Promise.all([fovea.api.get(`/api/datasets/${ds.id}/images/${it.id}/labels`).catch(() => ({ boxes: [] })), loadImage(it.id)]);
     if (item !== it) return;
     boxes = (labels.boxes || []).map(b => b.slice(0, 5));
-    if (!boxes.length && opts.propagate && prevBoxes.length && !labels.exists) { boxes = prevBoxes; dirty = true; setSaveState('dirty'); clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 400); }
+    // propagate: next frame has no boxes (missing or empty label) → carry the previous boxes over
+    if (!boxes.length && opts.propagate && prevBoxes.length) { boxes = prevBoxes; dirty = true; setSaveState('dirty'); clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), 400); }
     if (!(customView && prevDims && img && prevDims[0] === img.naturalWidth && prevDims[1] === img.naturalHeight)) fit();
     prevDims = img ? [img.naturalWidth, img.naturalHeight] : null;
     renderBoxes(); updateHud(); draw();
@@ -343,7 +344,15 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   function loadImage(id) {
     return new Promise((resolve) => {
       const im = new Image(); im.decoding = 'async';
-      im.onload = () => { img = im; resolve(); }; im.onerror = () => { img = null; stageMsg.textContent = 'Failed to load image'; stageMsg.classList.remove('hidden'); resolve(); };
+      im.onload = () => { img = im; resolve(); };
+      im.onerror = () => {
+        // Keep whatever labels the file still has — they are real data — but say plainly that the
+        // pixels are gone. Drawing is already blocked while `img` is null.
+        img = null;
+        stageMsg.textContent = 'Image file not found on disk — it may have been moved or deleted';
+        stageMsg.classList.remove('hidden');
+        resolve();
+      };
       im.src = fovea.api.imgUrl(id);
     });
   }
@@ -481,15 +490,17 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     if (k === 'ArrowLeft' && !e.altKey) { e.preventDefault(); stopAuto(); goTo(idx - 1); return; }
     if (e.altKey && k.startsWith('Arrow') && sel >= 0 && img) { e.preventDefault(); pushHistory(); const st = e.shiftKey ? 10 : 1; const b = boxes[sel]; if (k === 'ArrowLeft') b[1] -= st / img.naturalWidth; if (k === 'ArrowRight') b[1] += st / img.naturalWidth; if (k === 'ArrowUp') b[2] -= st / img.naturalHeight; if (k === 'ArrowDown') b[2] += st / img.naturalHeight; clampBox(b); changed(); return; }
     if (k >= '0' && k <= '9') { e.preventDefault(); classBuf += k; clearTimeout(classBufTimer); if (names.length <= 10) applyClassBuf(); else classBufTimer = setTimeout(applyClassBuf, 550); return; }
+    const shifted = e.shiftKey || (k.length === 1 && k !== k.toLowerCase() && k === k.toUpperCase());
+    if (shifted && k.length === 1) {
+      const up = k.toUpperCase();
+      if (up === 'A' || up === 'F' || up === 'X') { const st = { A: 'approved', F: 'flagged', X: 'excluded' }[up]; setReview(item && item.review && item.review.status === st ? null : st); return; }
+    }
     switch (k) {
       case 'v': case 'V': setTool('select'); break;
       case 'b': case 'B': setTool('box'); break;
       case 'p': case 'P': setTool('point'); break;
       case 'h': case 'H': setTool('pan'); break;
-      case 'f': setTool(tool); fit(); draw(); break;
-      case 'F': setReview(item && item.review && item.review.status === 'flagged' ? null : 'flagged'); break;
-      case 'A': setReview(item && item.review && item.review.status === 'approved' ? null : 'approved'); break;
-      case 'X': setReview(item && item.review && item.review.status === 'excluded' ? null : 'excluded'); break;
+      case 'f': fit(); draw(); break;
       case 'l': case 'L': labelsSw.click(); break;
       case 'n': case 'N': nextUnlabeled(); break;
       case 'c': case 'C': copyFromPrevious(); break;

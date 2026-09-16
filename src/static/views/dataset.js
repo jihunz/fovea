@@ -37,11 +37,12 @@ export async function render(ctx, fovea, tabId) {
     const el = h('div', { style: 'display:flex;flex-direction:column;height:100%;min-height:0' });
     const header = h('div', { class: 'ds-header' });
     const banner = h('div', { class: 'ds-scan hidden' });
+    const alert = h('div', { class: 'ds-alert hidden' });
     const tabBar = h('div', { class: 'tabs' });
     const content = h('div', { style: 'flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden' });
     tabs.forEach(t => tabBar.appendChild(h('button', { class: cls('tab', t.id === tab.id && 'active'), 'data-tab': t.id, onClick: () => fovea.router.navigate(`/d/${ds.id}/${t.id === 'overview' ? '' : t.id}`.replace(/\/$/, '')) }, icon(t.icon || 'circle', 15), t.label)));
-    el.appendChild(header); el.appendChild(banner); el.appendChild(tabBar); el.appendChild(content);
-    const s = { dsId: ds.id, el, header, banner, tabBar, content, tabId: null, destroyTab: null, stopWatch: null };
+    el.appendChild(header); el.appendChild(alert); el.appendChild(banner); el.appendChild(tabBar); el.appendChild(content);
+    const s = { dsId: ds.id, el, header, alert, banner, tabBar, content, tabId: null, destroyTab: null, stopWatch: null };
     shell = s;
     updateHeader(ds);
     return s;
@@ -60,13 +61,42 @@ export async function render(ctx, fovea, tabId) {
         link(`/d/${ds.id}/explore`, { class: 'btn btn-sm' }, icon('grid', 13), 'Explore'),
         link(`/d/${ds.id}/annotate`, { class: 'btn btn-sm btn-primary' }, icon('pen', 13), 'Annotate'),
         h('button', { class: 'btn btn-sm btn-icon', onClick: (e) => headerMenu(e.currentTarget, ds) }, icon('moreH', 14)))));
+    updateAlert(ds);
     watchJob(ds);
+  }
+
+  /** Loudly flag a dataset whose files are not on disk — otherwise it looks healthy while every image 404s. */
+  function updateAlert(ds) {
+    const s = shell; if (!s || !s.alert) return;
+    const reach = ds.reachable || { ok: true };
+    if (reach.ok) { s.alert.classList.add('hidden'); return; }
+    const where = reach.missing_sources && reach.missing_sources.length ? reach.missing_sources[0] : ds.root_host;
+    s.alert.classList.remove('hidden');
+    s.alert.innerHTML = '';
+    s.alert.appendChild(icon('alert', 15));
+    s.alert.appendChild(h('div', { class: 'grow' },
+      h('div', { class: 'strong' }, 'These files are not on this machine'),
+      h('div', { class: 'mono truncate', style: 'max-width:70vw' }, where),
+      h('div', { class: 'xs' }, 'The index still holds ' + fmt.num(ds.image_count) + ' images and your review marks. Point Fovea at the new location to restore them.')));
+    s.alert.appendChild(h('button', { class: 'btn btn-sm', onClick: () => relocate(ds) }, icon('folderOpen', 13), 'Move to a new path…'));
+  }
+
+  async function relocate(ds) {
+    const p = await fovea.pickPath({ title: `Where is “${ds.name}” now?`, files: true, start: ds.root_host, accept: ['.yaml', '.yml', '.txt'] });
+    if (!p) return;
+    try {
+      await fovea.api.post(`/api/datasets/${ds.id}/relocate`, { path: p });
+      ui.toast('Re-indexing from the new path…', { type: 'ok' });
+      await fovea.loadDatasets();
+      await refreshDataset(ds.id);
+    } catch (e) { ui.toast(e.message, { type: 'error' }); }
   }
 
   function headerMenu(anchor, ds) {
     ui.menu(anchor, [
       { label: 'Rescan index', icon: 'refresh', onClick: () => startScan(ds.id, false) },
       { label: 'Re-detect layout & rescan', icon: 'scan', onClick: () => startScan(ds.id, true) },
+      { label: 'Move to a new path…', icon: 'folderOpen', onClick: () => relocate(ds) },
       { label: 'Rename…', icon: 'pen', onClick: async () => { const v = await ui.prompt({ title: 'Rename dataset', value: ds.name }); if (v && v.trim()) { await fovea.api.patch(`/api/datasets/${ds.id}`, { name: v.trim() }); await refreshDataset(ds.id); await fovea.loadDatasets(); } } },
       { label: 'Copy path', icon: 'copy', onClick: () => ui.copyText(ds.root_host) },
       { label: 'API: dataset JSON', icon: 'external', onClick: () => window.open(`/api/datasets/${ds.id}`, '_blank') },
