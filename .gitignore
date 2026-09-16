@@ -383,3 +383,6 @@ src/data/*
 !src/static/lib/**
 
 .DS_Store
+
+# Test scratch data
+src/tests/.tmp-data/

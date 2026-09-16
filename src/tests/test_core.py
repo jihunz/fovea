@@ -242,3 +242,176 @@ def test_write_label_file_is_a_noop_when_nothing_changed(tmp_path):
     write_label_file(p, boxes)
     assert p.read_text() != original
     assert read_label_file(p)[0][0][1] == pytest.approx(0.25)
+
+
+# --------------------------------------------------------------------------- scanner hardening (audit)
+def _register(tmp_root, ds_prefix="s"):
+    import uuid
+    from fovea import db
+    db.init_db()
+    lay = layout.detect(str(tmp_root))
+    ds_id = f"{ds_prefix}-" + uuid.uuid4().hex[:8]
+    now = db.now()
+    db.execute(
+        "INSERT INTO datasets(id,name,root,layout,classes,classes_source,description,status,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (ds_id, ds_id, lay.root, db.dumps(lay.to_dict()), db.dumps([]), "inferred", "", "new", now, now),
+    )
+    return ds_id
+
+
+def _drop(ds_id):
+    from fovea import db
+    db.execute("DELETE FROM boxes WHERE dataset_id=?", (ds_id,))
+    db.execute("DELETE FROM images WHERE dataset_id=?", (ds_id,))
+    db.execute("DELETE FROM datasets WHERE id=?", (ds_id,))
+
+
+def test_zero_padded_frame_numbers_never_borrow_another_frames_label(tmp_path):
+    """cam_00000099_left has no label. It must NOT be matched to cam_00000007_left.txt — the next edit
+    would overwrite frame 7's ground truth."""
+    from fovea import db
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    root = tmp_path / "seq"
+    for n in (7, 42, 99):
+        _img(root / "images" / f"cam_{n:08d}_left.jpg")
+    (root / "labels").mkdir(parents=True)
+    (root / "labels" / "cam_00000007_left.txt").write_text("0 0.1 0.1 0.05 0.05\n")
+    (root / "labels" / "cam_00000042_left.txt").write_text("1 0.5 0.5 0.2 0.2\n")
+    ds_id = _register(root)
+    try:
+        scan_dataset(ds_id, Job(id="f", kind="scan"))
+        row = db.query_one("SELECT has_label, label_path, issues FROM images WHERE dataset_id=? AND rel_path LIKE ?",
+                           (ds_id, "%cam_00000099_left.jpg"))
+        assert row["has_label"] == 0, "an unlabeled frame must not inherit another frame's label"
+        assert row["label_path"].endswith("cam_00000099_left.txt")
+        assert "missing_label" in row["issues"]
+    finally:
+        _drop(ds_id)
+
+
+def test_hash_fallback_refuses_a_label_that_belongs_to_another_image(tmp_path):
+    """img_aaaaaaaa_x has its own label; img_bbbbbbbb_x has none. Both normalise to img_x, but the only
+    candidate already has an owner, so it must stay unmatched."""
+    from fovea import db
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    root = tmp_path / "h"
+    _img(root / "images" / "img_aaaaaaaa_x.jpg")
+    _img(root / "images" / "img_bbbbbbbb_x.jpg")
+    (root / "labels").mkdir(parents=True)
+    (root / "labels" / "img_aaaaaaaa_x.txt").write_text("0 0.5 0.5 0.2 0.2\n")
+    ds_id = _register(root)
+    try:
+        scan_dataset(ds_id, Job(id="h", kind="scan"))
+        rows = {r["rel_path"]: r for r in db.query("SELECT rel_path, has_label, label_path FROM images WHERE dataset_id=?", (ds_id,))}
+        b = rows["img_bbbbbbbb_x.jpg"]
+        assert b["has_label"] == 0
+        assert b["label_path"].endswith("img_bbbbbbbb_x.txt")
+    finally:
+        _drop(ds_id)
+
+
+def test_hash_fallback_still_matches_the_one_unambiguous_case(tmp_path):
+    """The feature itself keeps working: a single image whose label differs only by its hash."""
+    from fovea import db
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    root = tmp_path / "ok"
+    _img(root / "images" / "clip_1a2b3c4d_frame.jpg")
+    (root / "labels").mkdir(parents=True)
+    (root / "labels" / "clip_9f8e7d6c_frame.txt").write_text("0 0.5 0.5 0.2 0.2\n")
+    ds_id = _register(root)
+    try:
+        scan_dataset(ds_id, Job(id="ok", kind="scan"))
+        r = db.query_one("SELECT has_label, n_boxes, label_path FROM images WHERE dataset_id=?", (ds_id,))
+        assert r["has_label"] == 1 and r["n_boxes"] == 1
+        assert r["label_path"].endswith("clip_9f8e7d6c_frame.txt")
+    finally:
+        _drop(ds_id)
+
+
+def test_empty_listing_never_wipes_an_existing_index(tmp_path):
+    """Folders that still exist but list nothing (a mount that came back empty) must not prune."""
+    from fovea import db
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    root = _mini_dataset(tmp_path)
+    ds_id = _register(root)
+    try:
+        assert scan_dataset(ds_id, Job(id="e1", kind="scan"))["images"] == 2
+        for split in ("train", "val"):
+            (root / "images" / split / "a.jpg").unlink()
+        with pytest.raises(FileNotFoundError):
+            scan_dataset(ds_id, Job(id="e2", kind="scan"))
+        assert db.query_one("SELECT COUNT(*) c FROM images WHERE dataset_id=?", (ds_id,))["c"] == 2
+    finally:
+        _drop(ds_id)
+
+
+def test_unreadable_folder_is_treated_as_unreachable_not_empty(tmp_path):
+    import os
+    from fovea import db
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    root = _mini_dataset(tmp_path)
+    ds_id = _register(root)
+    val = root / "images" / "val"
+    try:
+        scan_dataset(ds_id, Job(id="p1", kind="scan"))
+        val.chmod(0)
+        scan_dataset(ds_id, Job(id="p2", kind="scan"))           # train still readable
+        splits = {r["split"] for r in db.query("SELECT DISTINCT split FROM images WHERE dataset_id=?", (ds_id,))}
+        assert splits == {"train", "val"}, "rows of a folder we could not read must be kept"
+    finally:
+        val.chmod(0o755)
+        _drop(ds_id)
+
+
+def test_cancelled_scan_restores_a_resting_status(tmp_path):
+    from fovea import db
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job, JobCancelled
+
+    root = _mini_dataset(tmp_path)
+    ds_id = _register(root)
+    try:
+        scan_dataset(ds_id, Job(id="c1", kind="scan"))
+        job = Job(id="c2", kind="scan")
+        job.cancel()                                              # cancelled before listing finishes
+        with pytest.raises(JobCancelled):
+            scan_dataset(ds_id, job)
+        row = db.query_one("SELECT status, image_count FROM datasets WHERE id=?", (ds_id,))
+        assert row["status"] == "ready", f"a cancel must not leave status={row['status']!r}"
+        assert row["image_count"] == 2
+    finally:
+        _drop(ds_id)
+
+
+def test_undecodable_filenames_are_skipped_not_fatal(tmp_path, monkeypatch):
+    """Linux filenames are bytes; one that is not UTF-8 used to abort the whole scan."""
+    from fovea.core import scanner
+
+    root = _mini_dataset(tmp_path)
+    lay = layout.detect(str(root))
+    src = next(s for s in lay.sources if s.split == "train")
+    real_walk = os.walk
+
+    def fake_walk(top, **kw):
+        for r, d, f in real_walk(top, **kw):
+            yield r, d, f + [os.fsdecode(b"caf\xe9.jpg")]
+    monkeypatch.setattr(scanner.os, "walk", fake_walk)
+
+    skipped = scanner.Counter()
+    got = list(scanner.enumerate_source(src, [], skipped))
+    assert [g[0] for g in got] == ["train/a.jpg"]
+    assert skipped["undecodable_name"] == 1
+
