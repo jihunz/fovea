@@ -70,7 +70,7 @@ def dataset_stats(dataset_id: str, class_names: List[str]) -> Dict[str, Any]:
     issues = [{"code": code, "label": ISSUE_LABELS.get(code, code), "count": n}
               for code, n in sorted(issue_counter.items(), key=lambda kv: -kv[1])]
 
-    reviews = {r["status"]: r["c"] for r in db.query("SELECT status, COUNT(*) c FROM reviews WHERE dataset_id=? GROUP BY status", (dataset_id,))}
+    reviews = {r["status"]: r["c"] for r in db.query("SELECT r.status, COUNT(*) c FROM reviews r JOIN images i ON i.dataset_id=r.dataset_id AND i.rel_path=r.rel_path WHERE r.dataset_id=? GROUP BY r.status", (dataset_id,))}
     seqs = db.query_one("SELECT COUNT(DISTINCT seq) n FROM images WHERE dataset_id=?", (dataset_id,)) or {"n": 0}
 
     return {

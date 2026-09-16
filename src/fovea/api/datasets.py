@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import mimetypes
-from pathlib import Path
+from collections import defaultdict
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
@@ -93,8 +94,55 @@ def relocate_dataset(ds_id: str, payload: dict = Body(...)):
     with db.transaction() as conn:
         conn.execute("DELETE FROM boxes WHERE dataset_id=?", (ds_id,))
         conn.execute("DELETE FROM images WHERE dataset_id=?", (ds_id,))
-    job = jobs.submit("scan", lambda j: scan_dataset(ds_id, j), dataset_id=ds_id, message="Queued")
+    def run(j):
+        result = dict(scan_dataset(ds_id, j) or {})
+        result.update(remap_reviews(ds_id))
+        return result
+
+    job = jobs.submit("scan", run, dataset_id=ds_id, message="Queued")
     return {"dataset": dataset_public(get_dataset_or_404(ds_id)), "job": job.to_dict()}
+
+
+def _suffix_len(a: str, b: str) -> int:
+    pa, pb = PurePosixPath(a).parts, PurePosixPath(b).parts
+    n = 0
+    while n < min(len(pa), len(pb)) and pa[-1 - n] == pb[-1 - n]:
+        n += 1
+    return n
+
+
+def remap_reviews(ds_id: str) -> dict:
+    """Re-attach review marks after a re-index changed image paths (e.g. a relocation that detects a
+    different layout, turning train/0001.jpg into 0001.jpg). Marks are keyed by rel_path, so without this
+    they silently orphan. A mark moves only to an unambiguous match — the unreviewed path sharing the
+    longest trailing run of path components, unique on both sides; anything else is left untouched."""
+    current = {r["rel_path"] for r in db.query("SELECT rel_path FROM images WHERE dataset_id=?", (ds_id,))}
+    marks = [r["rel_path"] for r in db.query("SELECT rel_path FROM reviews WHERE dataset_id=?", (ds_id,))]
+    orphans = [m for m in marks if m not in current]
+    if not orphans:
+        return {"reviews_moved": 0, "reviews_unmatched": 0}
+    taken = set(marks)
+    by_name = defaultdict(list)
+    for rel in current:
+        if rel not in taken:
+            by_name[PurePosixPath(rel).name].append(rel)
+    best = {}
+    for old in orphans:
+        cands = by_name.get(PurePosixPath(old).name, [])
+        if not cands:
+            continue
+        scored = sorted(((_suffix_len(old, c), c) for c in cands), reverse=True)
+        if len(scored) > 1 and scored[0][0] == scored[1][0]:
+            continue                                   # ambiguous: two equally good new homes
+        best[old] = scored[0][1]
+    claimed = defaultdict(list)
+    for old, new in best.items():
+        claimed[new].append(old)
+    moves = [(new, olds[0]) for new, olds in claimed.items() if len(olds) == 1]
+    with db.transaction() as conn:
+        conn.executemany("UPDATE reviews SET rel_path=? WHERE dataset_id=? AND rel_path=?",
+                         [(new, ds_id, old) for new, old in moves])
+    return {"reviews_moved": len(moves), "reviews_unmatched": len(orphans) - len(moves)}
 
 
 @router.patch("/{ds_id}")
@@ -179,32 +227,20 @@ def list_images(ds_id: str, request: Request, offset: int = Query(0, ge=0), limi
 
 
 @router.get("/{ds_id}/images/neighbor")
-def neighbor(ds_id: str, request: Request, id: int = Query(...), dir: str = Query("next")):
+def neighbor(ds_id: str, request: Request, id: int = Query(...), dir: str = Query("next"),
+             sort: Optional[str] = Query(None), order: Optional[str] = Query(None), need: Optional[str] = Query(None)):
     get_dataset_or_404(ds_id)
-    item = imagesq.neighbor(ds_id, filters_from(request), id, dir)
+    item = imagesq.neighbor(ds_id, filters_from(request), id, dir, sort, order, need)
     return {"item": item}
 
 
 @router.get("/{ds_id}/images/position")
 def image_position(ds_id: str, request: Request, id: int = Query(...), sort: Optional[str] = Query(None), order: Optional[str] = Query(None)):
-    """0-based position of an image inside the filtered/sorted list (id & name sorts only)."""
+    """0-based position of an image inside the filtered, sorted list; null when the image is not in it."""
     get_dataset_or_404(ds_id)
-    f = filters_from(request)
-    where, params = imagesq.build_where(ds_id, f)
-    cur = db.query_one("SELECT id, rel_path FROM images WHERE id=? AND dataset_id=?", (id, ds_id))
-    if not cur:
+    if not db.query_one("SELECT 1 FROM images WHERE id=? AND dataset_id=?", (id, ds_id)):
         raise HTTPException(404, "Image not found")
-    desc = (order or "").lower() == "desc"
-    if (sort or "id") == "name":
-        cmp = "(i.rel_path > ? OR (i.rel_path = ? AND i.id > ?))" if desc else "(i.rel_path < ? OR (i.rel_path = ? AND i.id < ?))"
-        extra = [cur["rel_path"], cur["rel_path"], id]
-    elif (sort or "id") == "id":
-        cmp = "i.id > ?" if desc else "i.id < ?"
-        extra = [id]
-    else:
-        return {"position": None}
-    row = db.query_one(f"SELECT COUNT(*) c FROM images i LEFT JOIN reviews r ON r.dataset_id=i.dataset_id AND r.rel_path=i.rel_path WHERE {where} AND {cmp}", params + extra)
-    return {"position": int(row["c"]) if row else None}
+    return {"position": imagesq.position(ds_id, filters_from(request), id, sort, order)}
 
 
 @router.get("/{ds_id}/images/{image_id}")
@@ -387,6 +423,8 @@ def set_review(ds_id: str, payload: dict = Body(...)):
     status = payload.get("status")
     if status not in ("approved", "flagged", "excluded", None):
         raise HTTPException(400, "status must be approved|flagged|excluded|null")
+    # A status change without a note (bulk bar, keyboard) must not wipe a note written earlier.
+    has_note = "note" in payload
     note = str(payload.get("note") or "")
     ids = payload.get("image_ids") or []
     rels = list(payload.get("rel_paths") or [])
@@ -406,8 +444,9 @@ def set_review(ds_id: str, payload: dict = Body(...)):
                 chunk = rels[i:i + 800]
                 conn.execute("DELETE FROM reviews WHERE dataset_id=? AND rel_path IN (%s)" % ",".join("?" * len(chunk)), [ds_id] + chunk)
         else:
-            conn.executemany("""INSERT INTO reviews(dataset_id, rel_path, status, note, updated_at) VALUES(?,?,?,?,?)
-                                ON CONFLICT(dataset_id, rel_path) DO UPDATE SET status=excluded.status, note=excluded.note, updated_at=excluded.updated_at""",
+            keep = "note=excluded.note" if has_note else "note=reviews.note"
+            conn.executemany(f"""INSERT INTO reviews(dataset_id, rel_path, status, note, updated_at) VALUES(?,?,?,?,?)
+                                ON CONFLICT(dataset_id, rel_path) DO UPDATE SET status=excluded.status, {keep}, updated_at=excluded.updated_at""",
                              [(ds_id, r, status, note, now) for r in rels])
     return {"updated": len(rels), "status": status}
 

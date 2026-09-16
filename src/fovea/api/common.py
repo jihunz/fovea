@@ -81,7 +81,7 @@ def check_reachable(row: dict, sample: int = 5) -> dict:
 
 def dataset_public(row: dict, with_job: bool = True) -> dict:
     layout = db.loads(row["layout"], {})
-    reviews = {r["status"]: r["c"] for r in db.query("SELECT status, COUNT(*) c FROM reviews WHERE dataset_id=? GROUP BY status", (row["id"],))}
+    reviews = {r["status"]: r["c"] for r in db.query("SELECT r.status, COUNT(*) c FROM reviews r JOIN images i ON i.dataset_id=r.dataset_id AND i.rel_path=r.rel_path WHERE r.dataset_id=? GROUP BY r.status", (row["id"],))}
     out = {
         "id": row["id"], "name": row["name"], "root": row["root"], "root_host": to_host(row["root"]),
         "layout": layout, "classes": db.loads(row["classes"]), "classes_source": row.get("classes_source", "inferred"),

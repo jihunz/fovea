@@ -1,18 +1,22 @@
 """Shared image query builder (filters / sorting) used by the API and exporters."""
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import db
 
-SORTS = {
-    "name": "i.rel_path {o}, i.id {o}",
-    "id": "i.id {o}",
-    "boxes": "i.n_boxes {o}, i.id ASC",
-    "size": "(COALESCE(i.width,0)*COALESCE(i.height,0)) {o}, i.id ASC",
-    "mtime": "i.mtime {o}, i.id ASC",
-    "reviewed": "COALESCE(r.updated_at, 0) {o}, i.id ASC",
-    "random": "((i.id * 2654435761) % 4294967296) {o}",
+# Sort key expression and how ties break: True = by id in the same direction, False = by id ascending
+# (natural order inside a group of equal keys), None = the key is unique by itself. This one table
+# drives ORDER BY, "position of an image" and "next/previous image", so the three can never disagree.
+SORT_KEYS = {
+    "name": ("i.rel_path", True),
+    "id": ("i.id", None),
+    "boxes": ("i.n_boxes", False),
+    "size": ("(COALESCE(i.width,0)*COALESCE(i.height,0))", False),
+    "mtime": ("COALESCE(i.mtime,0)", False),
+    "reviewed": ("COALESCE(r.updated_at,0)", False),
+    "random": ("((i.id * 2654435761) % 4294967296)", None),   # odd multiplier: a bijection, so unique
 }
 
 REVIEW_STATUSES = ("approved", "flagged", "excluded")
@@ -76,37 +80,82 @@ def build_where(dataset_id: str, f: Dict[str, Any]) -> Tuple[str, List[Any]]:
                 params.append(f'%"{code}"%')
             where.append("(" + " OR ".join(ors) + ")")
 
-    q = (f.get("q") or "").strip()
+    q = f.get("q")
+    q = str(q).strip() if isinstance(q, (str, int, float)) and not isinstance(q, bool) else ""   # ignore list/dict
     if q:
         where.append("i.rel_path LIKE ? ESCAPE '\\'")
         params.append("%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
 
     seq = f.get("seq")
-    if seq:
+    if seq not in (None, "") and not isinstance(seq, (list, dict)):
         where.append("i.seq = ?")
-        params.append(seq)
+        params.append(str(seq))
 
     ids = [int(x) for x in _csv(f.get("ids")) if x.isdigit()]
     if ids:
-        where.append("i.id IN (%s)" % ",".join("?" * len(ids)))
-        params.extend(ids)
+        # One JSON parameter instead of one per id: a large selection must not hit SQLite's variable limit.
+        where.append("i.id IN (SELECT value FROM json_each(?))")
+        params.append(json.dumps(ids))
 
     for key, op in (("min_boxes", ">="), ("max_boxes", "<=")):
         v = f.get(key)
-        if v not in (None, ""):
-            try:
-                where.append(f"i.n_boxes {op} ?")
-                params.append(int(v))
-            except ValueError:
-                pass
+        if v in (None, ""):
+            continue
+        try:
+            n = int(str(v).strip())          # parse first: a clause without its parameter is a 500
+        except (TypeError, ValueError):
+            continue
+        where.append(f"i.n_boxes {op} ?")
+        params.append(n)
 
     return " AND ".join(where), params
 
 
-def order_clause(sort: Optional[str], order: Optional[str]) -> str:
-    o = "DESC" if (order or "").lower() == "desc" else "ASC"
-    tmpl = SORTS.get(sort or "id", SORTS["id"])
-    return tmpl.format(o=o)
+def _sort_spec(sort: Optional[str], order: Optional[str]):
+    expr, tie = SORT_KEYS.get(sort or "id", SORT_KEYS["id"])
+    return expr, tie, (order or "").lower() == "desc"
+
+
+def order_clause(sort: Optional[str], order: Optional[str], reverse: bool = False) -> str:
+    expr, tie, desc = _sort_spec(sort, order)
+    main_desc = desc != reverse
+    clause = f"{expr} {'DESC' if main_desc else 'ASC'}"
+    if tie is None:
+        return clause
+    tie_desc = main_desc if tie else reverse
+    return f"{clause}, i.id {'DESC' if tie_desc else 'ASC'}"
+
+
+def _beyond(sort: Optional[str], order: Optional[str], after: bool) -> Tuple[str, bool]:
+    """Predicate for rows strictly before (or after) a row in this ordering. Returns (sql, needs_tie):
+    bind (key,) when needs_tie is False, else (key, key, id)."""
+    expr, tie, desc = _sort_spec(sort, order)
+    lt, gt = ("<", ">") if not after else (">", "<")
+    main_op = gt if desc else lt
+    if tie is None:
+        return f"{expr} {main_op} ?", False
+    tie_op = (gt if desc else lt) if tie else lt
+    return f"({expr} {main_op} ? OR ({expr} = ? AND i.id {tie_op} ?))", True
+
+
+_JOIN = "FROM images i LEFT JOIN reviews r ON r.dataset_id = i.dataset_id AND r.rel_path = i.rel_path"
+
+
+def _bind(key: Any, image_id: int, needs_tie: bool) -> List[Any]:
+    return [key, key, image_id] if needs_tie else [key]
+
+
+def position(dataset_id: str, f: Dict[str, Any], image_id: int, sort: Optional[str] = None,
+             order: Optional[str] = None) -> Optional[int]:
+    """0-based index of an image in the filtered, sorted list — None when it is not in that list."""
+    where, params = build_where(dataset_id, f)
+    expr = _sort_spec(sort, order)[0]
+    cur = db.query_one(f"SELECT {expr} AS k {_JOIN} WHERE {where} AND i.id = ?", params + [image_id])
+    if not cur:
+        return None
+    pred, needs_tie = _beyond(sort, order, after=False)
+    row = db.query_one(f"SELECT COUNT(*) AS c {_JOIN} WHERE {where} AND {pred}", params + _bind(cur["k"], image_id, needs_tie))
+    return int(row["c"]) if row else None
 
 
 BASE_SELECT = """
@@ -183,12 +232,23 @@ def attach_boxes(items: List[dict]) -> None:
             by_id[r["image_id"]]["boxes"].append([r["cls"], r["xc"], r["yc"], r["w"], r["h"]])
 
 
+NEEDS = {"nobox": "i.n_boxes = 0", "label": "i.has_label = 1", "issue": "i.issues != '[]'", "unreviewed": "r.status IS NULL"}
+
+
 def neighbor(dataset_id: str, f: Dict[str, Any], current_id: int, direction: str = "next",
-             sort: Optional[str] = None, order: Optional[str] = None) -> Optional[dict]:
-    """Next/prev image id in id order matching the filters (used for 'next unlabeled')."""
+             sort: Optional[str] = None, order: Optional[str] = None, need: Optional[str] = None) -> Optional[dict]:
+    """The next/previous image after `current_id` in the list's own order (filters + sort), optionally
+    only among images that also satisfy `need` (e.g. "nobox" for Annotate's next-unlabeled). The
+    current image does not have to match the filters; its sort key is the starting point."""
     where, params = build_where(dataset_id, f)
-    if direction == "prev":
-        row = db.query_one(f"{BASE_SELECT} WHERE {where} AND i.id < ? ORDER BY i.id DESC LIMIT 1", params + [current_id])
-    else:
-        row = db.query_one(f"{BASE_SELECT} WHERE {where} AND i.id > ? ORDER BY i.id ASC LIMIT 1", params + [current_id])
+    if need in NEEDS:
+        where = f"{where} AND {NEEDS[need]}"
+    expr = _sort_spec(sort, order)[0]
+    cur = db.query_one(f"SELECT {expr} AS k {_JOIN} WHERE i.id = ? AND i.dataset_id = ?", (current_id, dataset_id))
+    if not cur:
+        return None
+    after = direction != "prev"
+    pred, needs_tie = _beyond(sort, order, after=after)
+    row = db.query_one(f"{BASE_SELECT} WHERE {where} AND {pred} ORDER BY {order_clause(sort, order, reverse=not after)} LIMIT 1",
+                       params + _bind(cur["k"], current_id, needs_tie))
     return row_to_item(row) if row else None

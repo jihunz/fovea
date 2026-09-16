@@ -147,8 +147,29 @@ export function progress(pct, { indeterminate = false, cls = '' } = {}) {
   return h('div', { class: `progress ${indeterminate ? 'indeterminate' : ''} ${cls}` }, h('i', { style: `width:${indeterminate ? 40 : Math.round(pct * 100)}%` }));
 }
 export async function copyText(text, label = 'Copied') {
-  try { await navigator.clipboard.writeText(text); toast(label, { type: 'ok', timeout: 1500 }); }
-  catch (e) { toast('Clipboard unavailable', { type: 'error' }); }
+  // navigator.clipboard only exists in secure contexts: opened over plain http on a LAN address (a common
+  // Docker setup) it is undefined, and an unfocused tab rejects it. Fall back rather than fail.
+  try { await navigator.clipboard.writeText(text); toast(label, { type: 'ok', timeout: 1500 }); return true; }
+  catch (e) { /* try the legacy path */ }
+  const ta = h('textarea', { style: 'position:fixed;top:-1000px;left:0;opacity:0', readonly: true });
+  ta.value = text; document.body.appendChild(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  ta.remove();
+  if (ok) { toast(label, { type: 'ok', timeout: 1500 }); return true; }
+  // Last resort: hand the text over, pre-selected, so one keystroke copies it.
+  const lines = text.split('\n').length;
+  modal({
+    title: 'Copy manually', size: 'lg',
+    body: (api) => {
+      const area = h('textarea', { class: 'input mono', rows: Math.min(14, Math.max(3, lines)), readonly: true, style: 'width:100%;white-space:pre' });
+      area.value = text;
+      setTimeout(() => { area.focus(); area.select(); }, 40);
+      return h('div', { class: 'col gap-8' }, h('div', { class: 'small muted' }, `The browser blocked clipboard access. The text is selected — press ${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'}C.`), area);
+    },
+    footer: (api) => h('button', { class: 'btn btn-primary', onClick: () => api.close() }, 'Done'),
+  });
+  return false;
 }
 export function seg(options, value, onChange, { size } = {}) {
   const el = h('div', { class: 'seg' });

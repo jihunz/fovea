@@ -529,6 +529,111 @@ def test_export_labels_are_plain_training_rows(tmp_path):
 # ---------------------------------------------------------------- ordering, reviews, export safety
 
 
+def _seeded(tmp_path, n=9):
+    """Images with deliberately tied sort keys (box counts 0/1/2 repeating) and a few reviews."""
+    from fovea import db
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    root = tmp_path / "ord"
+    for k in range(n):
+        _img(root / "images" / "train" / f"f{k:02d}.jpg", size=(32 + k, 24))
+        (root / "labels" / "train").mkdir(parents=True, exist_ok=True)
+        (root / "labels" / "train" / f"f{k:02d}.txt").write_text("0 0.5 0.5 0.1 0.1\n" * (k % 3))
+    ds_id = _register(root)
+    scan_dataset(ds_id, Job(id="o", kind="scan"))
+    return ds_id, root
+
+
+def test_position_and_neighbor_agree_with_the_list_order_for_every_sort(tmp_path):
+    from fovea.core import imagesq
+
+    ds_id, _root = _seeded(tmp_path)
+    try:
+        for sort in imagesq.SORT_KEYS:
+            for order in ("asc", "desc"):
+                _total, items = imagesq.list_images(ds_id, {}, 0, 100, sort, order)
+                ids = [it["id"] for it in items]
+                for pos, iid in enumerate(ids):
+                    assert imagesq.position(ds_id, {}, iid, sort, order) == pos, (sort, order, pos)
+                    nxt = imagesq.neighbor(ds_id, {}, iid, "next", sort, order)
+                    prv = imagesq.neighbor(ds_id, {}, iid, "prev", sort, order)
+                    assert (nxt["id"] if nxt else None) == (ids[pos + 1] if pos + 1 < len(ids) else None), (sort, order, pos)
+                    assert (prv["id"] if prv else None) == (ids[pos - 1] if pos else None), (sort, order, pos)
+        # "next without boxes" walks the list's own order and skips labeled images
+        _t, items = imagesq.list_images(ds_id, {}, 0, 100, "boxes", "desc")
+        first = items[0]["id"]
+        hit = imagesq.neighbor(ds_id, {}, first, "next", "boxes", "desc", need="nobox")
+        assert hit and hit["n_boxes"] == 0
+        # an image outside the filtered list has no position
+        outside = next(it["id"] for it in items if it["n_boxes"] > 0)
+        assert imagesq.position(ds_id, {"labeled": "nobox"}, outside, "id", "asc") is None
+    finally:
+        _drop(ds_id)
+
+
+def test_malformed_box_count_filters_are_ignored_not_500(tmp_path):
+    from fovea.core import imagesq
+
+    ds_id, _root = _seeded(tmp_path, n=3)
+    try:
+        for bad in ("abc", "2.5", " ", ["1"], {"x": 1}):
+            total, _items = imagesq.list_images(ds_id, {"min_boxes": bad, "max_boxes": bad, "seq": ["x"], "q": ["y"]})
+            assert total == 3
+        big = ",".join(str(i) for i in range(1, 40000))      # beyond SQLite's bound-variable limit
+        imagesq.count_images(ds_id, {"ids": big})
+    finally:
+        _drop(ds_id)
+
+
+def test_status_change_without_a_note_keeps_the_note(tmp_path):
+    from fovea import db
+    from fovea.api.datasets import set_review
+
+    ds_id, _root = _seeded(tmp_path, n=2)
+    try:
+        iid = db.query_one("SELECT id FROM images WHERE dataset_id=? ORDER BY id", (ds_id,))["id"]
+        set_review(ds_id, {"image_ids": [iid], "status": "flagged", "note": "blurry, recheck"})
+        set_review(ds_id, {"image_ids": [iid], "status": "approved"})            # bulk bar / keyboard
+        row = db.query_one("SELECT status, note FROM reviews WHERE dataset_id=?", (ds_id,))
+        assert row["status"] == "approved" and row["note"] == "blurry, recheck"
+        set_review(ds_id, {"image_ids": [iid], "status": "approved", "note": ""})  # explicit clear
+        assert db.query_one("SELECT note FROM reviews WHERE dataset_id=?", (ds_id,))["note"] == ""
+    finally:
+        _drop(ds_id)
+
+
+def test_relocation_reattaches_review_marks_to_the_new_paths(tmp_path):
+    from fovea import db
+    from fovea.api.datasets import remap_reviews
+    from fovea.core.scanner import scan_dataset
+    from fovea.jobs import Job
+
+    ds_id, root = _seeded(tmp_path, n=3)
+    try:
+        rels = [r["rel_path"] for r in db.query("SELECT rel_path FROM images WHERE dataset_id=? ORDER BY id", (ds_id,))]
+        assert rels[0].startswith("train/")
+        for rel, st in zip(rels, ("approved", "flagged")):
+            db.execute("INSERT INTO reviews(dataset_id, rel_path, status, note, updated_at) VALUES(?,?,?,?,?)", (ds_id, rel, st, "", 1))
+        db.execute("INSERT INTO reviews(dataset_id, rel_path, status, note, updated_at) VALUES(?,?,?,?,?)", (ds_id, "gone/zz.jpg", "excluded", "", 1))
+        # re-point at images/train directly: the detected layout changes and so does every rel_path
+        new_root = root / "images" / "train"
+        lay = layout.detect(str(new_root))
+        db.execute("UPDATE datasets SET root=?, layout=? WHERE id=?", (lay.root, db.dumps(lay.to_dict()), ds_id))
+        db.execute("DELETE FROM boxes WHERE dataset_id=?", (ds_id,))
+        db.execute("DELETE FROM images WHERE dataset_id=?", (ds_id,))
+        scan_dataset(ds_id, Job(id="r", kind="scan"))
+        now = {r["rel_path"] for r in db.query("SELECT rel_path FROM images WHERE dataset_id=?", (ds_id,))}
+        assert rels[0] not in now, "precondition: the layout change renamed the images"
+        res = remap_reviews(ds_id)
+        assert res == {"reviews_moved": 2, "reviews_unmatched": 1}
+        joined = db.query("SELECT r.status FROM reviews r JOIN images i ON i.dataset_id=r.dataset_id AND i.rel_path=r.rel_path WHERE r.dataset_id=? ORDER BY r.status", (ds_id,))
+        assert [r["status"] for r in joined] == ["approved", "flagged"]
+    finally:
+        db.execute("DELETE FROM reviews WHERE dataset_id=?", (ds_id,))
+        _drop(ds_id)
+
+
 def test_export_copy_refuses_to_write_into_the_dataset(tmp_path):
     from fovea.core.export import check_copy_target, copy_subset
     from fovea.jobs import Job

@@ -538,11 +538,12 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   async function nextUnlabeled() {
     if (!item) return;
     try {
-      const { split, cls, q, seq, ids, review, issue } = filters;
-      const res = await fovea.api.get(`/api/datasets/${ds.id}/images/neighbor`, { id: item.id, dir: 'next', labeled: 'nobox', split, cls, q, seq, ids, review, issue });
-      if (!res.item) { ui.toast('No unlabeled image after this one'); return; }
+      // Search the working set itself — same filters, same order — for the next image without boxes, so the
+      // result is always reachable in this list and "next" never jumps backwards.
+      const res = await fovea.api.get(`/api/datasets/${ds.id}/images/neighbor`, { ...filters, sort, order, id: item.id, dir: 'next', need: 'nobox' });
+      if (!res.item) { ui.toast('No image without boxes after this one in the current list'); return; }
       const pos = await cursor.positionOf(res.item.id);
-      if (pos >= 0) goTo(pos); else fovea.router.navigate(`/d/${ds.id}/annotate?img=${res.item.id}`);
+      if (pos >= 0) goTo(pos); else ui.toast('Could not locate that image in the current list', { type: 'error' });
     } catch (e) { ui.toast(e.message, { type: 'error' }); }
   }
   async function copyFromPrevious() {
@@ -552,7 +553,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   }
   async function setReview(status) {
     if (!item) return;
-    try { await fovea.api.put(`/api/datasets/${ds.id}/review`, { image_ids: [item.id], status }); item.review = status ? { status, note: '', updated_at: Date.now() / 1000 } : null; cursor.update({ id: item.id, review: item.review }); renderInfo(); fovea.bus.emit('review:changed', { ids: [item.id], status }); }
+    try { await fovea.api.put(`/api/datasets/${ds.id}/review`, { image_ids: [item.id], status }); item.review = status ? { status, note: (item.review && item.review.note) || '', updated_at: Date.now() / 1000 } : null; cursor.update({ id: item.id, review: item.review }); renderInfo(); fovea.bus.emit('review:changed', { ids: [item.id], status }); }
     catch (e) { ui.toast(e.message, { type: 'error' }); }
   }
   function startAuto() { autoTimer = setInterval(() => goTo(idx + 1), Number(speed.value)); playBtn.classList.add('active'); playBtn.innerHTML = ''; playBtn.appendChild(icon('pause', 13)); }

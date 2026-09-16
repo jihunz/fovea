@@ -223,14 +223,26 @@ async function render(el, { ctx, dataset, fovea }) {
   }
   async function copyList() {
     const ids = [...selected];
-    const text = await fovea.api.api(`/api/datasets/${ds.id}/export/list`, { method: 'POST', body: { filters: { ids: ids.join(',') }, style: 'host' } });
-    ui.copyText(typeof text === 'string' ? text : '', `Copied ${ids.length} paths`);
+    if (!ids.length) return;
+    try {
+      const text = await fovea.api.post(`/api/datasets/${ds.id}/export/list`, { filters: { ids: ids.join(',') }, style: 'host' });
+      ui.copyText(typeof text === 'string' ? text : '', `Copied ${ids.length} path${ids.length > 1 ? 's' : ''}`);
+    } catch (e) { ui.toast('Copy failed: ' + e.message, { type: 'error' }); }
   }
   async function review(ids, status, note) {
     try {
-      await fovea.api.put(`/api/datasets/${ds.id}/review`, { image_ids: ids, status, note: note || '' });
+      // Only the Inspect panel passes a note. Bulk and keyboard reviews omit it so the server keeps
+      // whatever note an image already has instead of blanking it.
+      const body = { image_ids: ids, status };
+      if (note !== undefined) body.note = note;
+      await fovea.api.put(`/api/datasets/${ds.id}/review`, body);
       const set = new Set(ids);
-      cursor.items.forEach((it, idx) => { if (it && set.has(it.id)) { it.review = status ? { status, note: note || '', updated_at: Date.now() / 1000 } : null; updateTileReview(idx); } });
+      cursor.items.forEach((it, idx) => {
+        if (!it || !set.has(it.id)) return;
+        const kept = note !== undefined ? note : (it.review ? it.review.note : '');
+        it.review = status ? { status, note: kept || '', updated_at: Date.now() / 1000 } : null;
+        updateTileReview(idx);
+      });
       fovea.bus.emit('review:changed', { ids, status });
       if (inspect) inspect.draw();
       ui.toast(status ? `${REVIEW[status].label}: ${ids.length} image${ids.length > 1 ? 's' : ''}` : `Cleared ${ids.length}`, { timeout: 1200 });
