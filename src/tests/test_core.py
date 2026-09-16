@@ -218,3 +218,27 @@ def test_partial_unreachable_keeps_the_missing_split(tmp_path):
         db.execute("DELETE FROM boxes WHERE dataset_id=?", (ds_id,))
         db.execute("DELETE FROM images WHERE dataset_id=?", (ds_id,))
         db.execute("DELETE FROM datasets WHERE id=?", (ds_id,))
+
+
+def test_write_label_file_is_a_noop_when_nothing_changed(tmp_path):
+    """Opening an image must never rewrite its label file — not its bytes, not its mtime, and not
+    the precision the annotations were authored with."""
+    import time
+    p = tmp_path / "a.txt"
+
+    # a file authored elsewhere with full float precision
+    original = "1 0.5515613555908203 0.5003909468650818 0.09941123425960541 0.08842962980270386\n"
+    p.write_text(original)
+    before_mtime = p.stat().st_mtime
+    time.sleep(0.01)
+
+    boxes, _c, _i = read_label_file(p)
+    write_label_file(p, boxes)                       # round-trip with no edits
+    assert p.read_text() == original, "a no-op save must not reformat the file"
+    assert p.stat().st_mtime == before_mtime, "a no-op save must not touch mtime"
+
+    # a real edit still writes
+    boxes[0][1] = 0.25
+    write_label_file(p, boxes)
+    assert p.read_text() != original
+    assert read_label_file(p)[0][0][1] == pytest.approx(0.25)

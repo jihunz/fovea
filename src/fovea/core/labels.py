@@ -109,10 +109,31 @@ def sanitize_boxes(boxes: Iterable[Sequence[float]]) -> List[Box]:
 
 
 def write_label_file(path: Path, boxes: Iterable[Sequence[float]]) -> int:
+    """Write YOLO labels atomically. A write that would not change the file is skipped entirely, so
+    simply opening an image in the annotator never rewrites the user's label file — that would bump
+    its mtime and silently reformat coordinates it was never asked to touch."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [format_box(b) for b in boxes]
     data = ("\n".join(lines) + "\n") if lines else ""
+
+    if path.is_file():
+        try:
+            if path.read_text(encoding="utf-8") == data:
+                return len(lines)
+        except OSError:
+            pass
+        # Same boxes, different text (e.g. the file stores more decimals than we emit): leave it be
+        # rather than degrading the author's precision on a no-op save.
+        try:
+            existing, _confs, _issues = parse_label_text(path.read_text(encoding="utf-8", errors="replace"))
+            if len(existing) == len(lines) and all(
+                int(a[0]) == int(b[0]) and all(abs(a[i] - float(b[i])) < 5e-7 for i in range(1, 5))
+                for a, b in zip(existing, [list(map(float, ln.split())) for ln in lines])
+            ):
+                return len(lines)
+        except Exception:  # noqa: BLE001 — never let a comparison stop a real save
+            pass
     fd, tmp = tempfile.mkstemp(prefix=".fovea-", suffix=".txt", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
