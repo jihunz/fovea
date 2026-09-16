@@ -15,6 +15,7 @@
   --text-2: #5b5c5f;
   --text-3: #8b8c90;
   --accent: #0f766e;
+  --on-accent: #fff;            /* text/icons placed ON an accent fill */
   --accent-hover: #0b5f59;
   --accent-soft: #e3f3f0;
   --accent-text: #0b5f59;
@@ -46,6 +47,7 @@
   --text-2: #a4a5aa;
   --text-3: #6f7076;
   --accent: #2dd4bf;
+  --on-accent: #06231f;
   --accent-hover: #5eead4;
   --accent-soft: rgba(45, 212, 191, 0.13);
   --accent-text: #5eead4;
@@ -67,7 +69,7 @@
     --bg: #0f1012; --surface: #17181b; --surface-2: #1e1f23; --surface-3: #26272c;
     --border: #26272c; --border-strong: #35363c;
     --text: #ececec; --text-2: #a4a5aa; --text-3: #6f7076;
-    --accent: #2dd4bf; --accent-hover: #5eead4; --accent-soft: rgba(45,212,191,.13); --accent-text: #5eead4; --accent-ring: rgba(45,212,191,.32);
+    --accent: #2dd4bf; --accent-hover: #5eead4; --accent-soft: rgba(45,212,191,.13); --accent-text: #5eead4; --accent-ring: rgba(45,212,191,.32); --on-accent: #06231f;
     --ok: #22c55e; --ok-soft: rgba(34,197,94,.15); --warn: #f59e0b; --warn-soft: rgba(245,158,11,.15);
     --danger: #ef4444; --danger-soft: rgba(239,68,68,.16); --info: #60a5fa; --info-soft: rgba(96,165,250,.15);
     --approve: #22c55e; --flag: #f59e0b; --exclude: #ef4444; --stage: #08090a; --tile-bg: #101114;
@@ -304,10 +306,11 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .toast-stack { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 300; align-items: center; pointer-events: none; }
 .toast { pointer-events: auto; background: var(--text); color: var(--bg); padding: 9px 14px; border-radius: var(--r); box-shadow: var(--shadow-md); font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 10px; animation: pop .15s ease-out; max-width: 560px; }
 .toast.error { background: var(--danger); color: #fff; } .toast.ok { background: var(--ok); color: #fff; }
-.toast .btn { height: 24px; font-size: 12px; background: rgba(255,255,255,.14); border-color: transparent; color: inherit; box-shadow: none; }
+.toast .btn { height: 24px; font-size: 12px; background: transparent; border-color: color-mix(in srgb, currentColor 35%, transparent); color: inherit; box-shadow: none; }
+.toast .btn:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
 .menu { position: fixed; z-index: 200; min-width: 180px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-md); padding: 4px; animation: pop .12s ease-out; }
 .menu-item { display: flex; align-items: center; gap: 9px; padding: 6px 9px; border-radius: 5px; cursor: pointer; font-size: 13px; width: 100%; border: 0; background: none; text-align: left; color: var(--text); }
-.menu-item:hover { background: var(--surface-2); }
+.menu-item:hover, .menu-item:focus-visible { background: var(--surface-2); outline: none; }
 .menu-item.danger { color: var(--danger); }
 .menu-item .ico { width: 14px; height: 14px; opacity: .8; }
 .menu-item .kbd { margin-left: auto; }
@@ -461,8 +464,9 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .grid.list .tile { display: grid; grid-template-columns: 96px 1fr; } .grid.list { grid-template-columns: 1fr; gap: 6px; }
 .grid.list .tile .frame { aspect-ratio: 4 / 3; }
 .bulk-bar { position: sticky; bottom: 0; margin: 12px auto 0; width: max-content; max-width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--text); color: var(--bg); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); z-index: 5; animation: pop .15s ease-out; }
-.bulk-bar .btn { height: 26px; font-size: 12px; background: rgba(255,255,255,.12); border-color: transparent; color: inherit; box-shadow: none; }
-.bulk-bar .btn:hover { background: rgba(255,255,255,.22); }
+/* The bar is an inverse surface (light in the dark theme), so buttons tint with its own foreground. */
+.bulk-bar .btn { height: 26px; font-size: 12px; background: transparent; border-color: color-mix(in srgb, currentColor 35%, transparent); color: inherit; box-shadow: none; }
+.bulk-bar .btn:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
 .result-count { color: var(--text-2); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .load-more { display: flex; justify-content: center; padding: 20px; }
 .filter-pop { width: 260px; padding: 8px; }
@@ -475,7 +479,7 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .inspect-top .name { font-family: var(--mono); font-size: 12px; color: #cfcfcf; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspect-top .btn { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.12); color: #e8e8e8; box-shadow: none; }
 .inspect-top .btn:hover { background: rgba(255,255,255,.12); }
-.inspect-top .btn.active { background: var(--accent); border-color: var(--accent); color: #06231f; }
+.inspect-top .btn.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .inspect-stage { position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .inspect-stage .pic { position: relative; max-width: 100%; max-height: 100%; }
 .inspect-stage img { display: block; max-width: calc(100vw - 320px - 32px); max-height: calc(100vh - 44px - 32px); width: auto; height: auto; }

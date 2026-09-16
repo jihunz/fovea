@@ -20,7 +20,7 @@ async function render(el, { dataset, fovea, refresh }) {
     try { ({ stats } = await fovea.api.get(`/api/datasets/${ds.id}/stats`)); }
     catch (e) { inner.appendChild(ui.emptyState({ icon: 'alert', title: 'Could not load stats', message: e.message })); return; }
     const t = stats.totals; const rv = stats.reviews; const reviewed = rv.approved + rv.flagged + rv.excluded;
-    const names = ds.classes || [];
+    const names = [...(ds.classes || [])];   // a working copy: unsaved rows must not leak into other views
 
     // ---- stat tiles
     inner.appendChild(h('div', { class: 'stat-grid mb-16' },
@@ -101,8 +101,10 @@ async function render(el, { dataset, fovea, refresh }) {
     renderClasses();
     const saveClasses = async () => {
       const vals = classInputs.slice(0, names.length).map((inp, i) => inp.value.trim() || `class_${i}`);
-      await fovea.api.patch(`/api/datasets/${ds.id}/`.replace(/\/$/, ''), { classes: vals });
-      ds = await refresh(); ui.toast('Class names saved', { type: 'ok' }); draw();
+      try {
+        await fovea.api.patch(`/api/datasets/${ds.id}`, { classes: vals });
+        ds = await refresh(); ui.toast('Class names saved', { type: 'ok' }); draw();
+      } catch (e) { ui.toast('Could not save class names: ' + e.message, { type: 'error' }); }
     };
     grid.appendChild(card('Dataset', lay.kind, h('div', { class: 'ov-grid' },
       h('div', { class: 'span-6' },

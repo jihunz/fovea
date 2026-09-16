@@ -16,11 +16,17 @@ export function toast(message, { type = 'info', timeout = 3200, action } = {}) {
 // ------------------------------------------------------------------ modal
 const modals = [];
 export function modal({ title, body, footer, size, onClose, closable = true, className = '' }) {
+  const restoreTo = document.activeElement;
   const backdrop = h('div', { class: 'backdrop' });
-  const box = h('div', { class: `modal ${size || ''} ${className}` });
+  const box = h('div', { class: `modal ${size || ''} ${className}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': typeof title === 'string' ? title : null, tabindex: '-1' });
+  // Every way out (buttons, Escape, backdrop, confirm/prompt results) goes through here.
   const close = (result) => {
     if (!backdrop.isConnected) return;
     backdrop.remove(); modals.splice(modals.indexOf(api), 1);
+    // Hand focus back to what opened the dialog; otherwise keyboard users restart at the top of the page.
+    if (restoreTo && restoreTo.isConnected && restoreTo !== document.body && typeof restoreTo.focus === 'function') {
+      try { restoreTo.focus({ preventScroll: true }); } catch (e) { /* element gone */ }
+    }
     onClose && onClose(result);
   };
   const api = { close, el: box, backdrop };
@@ -35,21 +41,35 @@ export function modal({ title, body, footer, size, onClose, closable = true, cla
   document.body.appendChild(backdrop);
   modals.push(api);
   api.body = bodyEl;
-  setTimeout(() => { const first = box.querySelector('input,select,textarea,button.btn-primary'); first && first.focus(); }, 30);
+  setTimeout(() => { if (!box.contains(document.activeElement)) { const first = box.querySelector('input,select,textarea,button.btn-primary'); (first || box).focus(); } }, 30);
   return api;
 }
+const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && modals.length) { const m = modals[modals.length - 1]; if (m && m.el.isConnected) { e.stopPropagation(); m.close(); } }
+  if (!modals.length) return;
+  const m = modals[modals.length - 1];
+  if (!m || !m.el.isConnected) return;
+  if (e.key === 'Escape') { e.stopPropagation(); m.close(); return; }
+  if (e.key === 'Tab') {
+    // Keep focus inside the top dialog: the page behind the backdrop is not operable.
+    const f = [...m.el.querySelectorAll(FOCUSABLE)].filter(n => n.getClientRects().length);
+    if (!f.length) { e.preventDefault(); m.el.focus(); return; }
+    const first = f[0], last = f[f.length - 1], at = document.activeElement;
+    if (!m.el.contains(at)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+    else if (e.shiftKey && at === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
+  }
 }, true);
 export const hasModal = () => modals.length > 0;
 
 export function confirm({ title = 'Are you sure?', message, okLabel = 'Confirm', cancelLabel = 'Cancel', danger = false }) {
   return new Promise((resolve) => {
-    const m = modal({
-      title, body: h('p', { style: 'margin:0' }, message), onClose: () => resolve(false),
+    let ok = false;
+    modal({
+      title, body: h('p', { style: 'margin:0' }, message), onClose: () => resolve(ok),
       footer: (api) => [
         h('button', { class: 'btn', onClick: () => api.close() }, cancelLabel),
-        h('button', { class: `btn ${danger ? 'btn-danger' : 'btn-primary'}`, onClick: () => { resolve(true); api.onDone = true; api.backdrop.remove(); modals.splice(modals.indexOf(api), 1); } }, okLabel),
+        h('button', { class: `btn ${danger ? 'btn-danger' : 'btn-primary'}`, onClick: () => { ok = true; api.close(); } }, okLabel),
       ],
     });
   });
@@ -57,10 +77,10 @@ export function confirm({ title = 'Are you sure?', message, okLabel = 'Confirm',
 
 export function prompt({ title, label, value = '', placeholder = '', okLabel = 'OK', mono = false }) {
   return new Promise((resolve) => {
-    let input;
-    const submit = (api) => { const v = input.value; api.backdrop.remove(); modals.splice(modals.indexOf(api), 1); resolve(v); };
-    const m = modal({
-      title, onClose: () => resolve(null),
+    let input, result = null;
+    const submit = (api) => { result = input.value; api.close(); };
+    modal({
+      title, onClose: () => resolve(result),
       body: (api) => h('div', { class: 'field' }, label ? h('label', { class: 'label' }, label) : null,
         input = h('input', { class: `input ${mono ? 'mono' : ''}`, value, placeholder, onKeydown: (e) => { if (e.key === 'Enter') submit(api); } })),
       footer: (api) => [h('button', { class: 'btn', onClick: () => api.close() }, 'Cancel'), h('button', { class: 'btn btn-primary', onClick: () => submit(api) }, okLabel)],
@@ -69,18 +89,32 @@ export function prompt({ title, label, value = '', placeholder = '', okLabel = '
 }
 
 // ------------------------------------------------------------------ menu
-let openMenu = null;
+let openMenu = null, menuRestore = null;
 export function menu(anchor, items) {
   closeMenu();
+  menuRestore = document.activeElement;
   const el = h('div', { class: 'menu', role: 'menu' });
   for (const it of items) {
     if (!it) continue;
-    if (it.sep) { el.appendChild(h('div', { class: 'menu-sep' })); continue; }
+    if (it.sep) { el.appendChild(h('div', { class: 'menu-sep', role: 'separator' })); continue; }
     if (it.label && !it.onClick && it.header) { el.appendChild(h('div', { class: 'menu-label' }, it.label)); continue; }
-    el.appendChild(h('button', { class: `menu-item ${it.danger ? 'danger' : ''} ${it.disabled ? 'disabled' : ''}`, disabled: !!it.disabled,
-      onClick: (e) => { e.stopPropagation(); closeMenu(); it.onClick && it.onClick(e); } },
+    el.appendChild(h('button', { class: `menu-item ${it.danger ? 'danger' : ''} ${it.disabled ? 'disabled' : ''}`, role: 'menuitem', tabindex: '-1', disabled: !!it.disabled,
+      onClick: (e) => { e.stopPropagation(); closeMenu(true); it.onClick && it.onClick(e); } },
       it.icon ? icon(it.icon, 14) : h('span', { class: 'ico' }), h('span', it.label), it.kbd ? kbd(it.kbd) : null));
   }
+  // Arrow keys move between items; Tab leaves. Handled here so views listening on document do not also react.
+  el.addEventListener('keydown', (e) => {
+    const list = [...el.querySelectorAll('.menu-item:not([disabled])')];
+    if (!list.length) return;
+    const i = list.indexOf(document.activeElement);
+    const go = (n) => { e.preventDefault(); e.stopPropagation(); list[(n + list.length) % list.length].focus(); };
+    if (e.key === 'ArrowDown') go(i + 1);
+    else if (e.key === 'ArrowUp') go(i < 0 ? -1 : i - 1);
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(-1);
+    else if (e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); closeMenu(true); }
+    else if (e.key !== 'Escape' && e.key !== 'Enter' && e.key !== ' ') e.stopPropagation();
+  });
   document.body.appendChild(el);
   const r = anchor instanceof Element ? anchor.getBoundingClientRect() : { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
   const mw = el.offsetWidth, mh = el.offsetHeight;
@@ -89,14 +123,25 @@ export function menu(anchor, items) {
   if (y + mh > innerHeight - 8) y = Math.max(8, r.top - mh - 4);
   el.style.left = x + 'px'; el.style.top = y + 'px';
   openMenu = el;
+  const firstItem = el.querySelector('.menu-item:not([disabled])');
+  if (firstItem) firstItem.focus({ preventScroll: true });
   setTimeout(() => { document.addEventListener('mousedown', outside, { once: true }); }, 0);
   function outside(e) { if (!el.contains(e.target)) closeMenu(); else document.addEventListener('mousedown', outside, { once: true }); }
   return el;
 }
-export function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
+/** restoreFocus: return focus to what opened the menu (keyboard dismissal or choosing an item). */
+export function closeMenu(restoreFocus = false) {
+  if (!openMenu) return;
+  const hadFocus = openMenu.contains(document.activeElement);
+  openMenu.remove(); openMenu = null;
+  const back = menuRestore; menuRestore = null;
+  if ((restoreFocus || hadFocus) && back && back.isConnected && back !== document.body && typeof back.focus === 'function') {
+    try { back.focus({ preventScroll: true }); } catch (e) { /* gone */ }
+  }
+}
 // An Escape that closes a menu is consumed: views listening on document must not also act on it
 // (e.g. Explore clearing the whole selection when the user only meant to dismiss a context menu).
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && openMenu) { closeMenu(); e.stopImmediatePropagation(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && openMenu) { closeMenu(true); e.stopImmediatePropagation(); } });
 window.addEventListener('resize', closeMenu);
 
 // ------------------------------------------------------------------ popover (anchored panel that stays open)
