@@ -744,15 +744,30 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   // ---------------------------------------------------------------- boot
   renderClasses(); updateHud(); renderAI();
   const startId = q0.get('img') ? Number(q0.get('img')) : null;
-  try {
-    await cursor.loadPage(0);
-    if (!cursor.total) { stageMsg.textContent = 'No images match the current filter'; renderInfo(); }
-    else { let start = 0; if (startId) { const pos = await cursor.positionOf(startId); if (pos >= 0) start = pos; } await goTo(start); }
-  } catch (e) { stageMsg.textContent = e.message; }
-  resizeCanvas();
+  // Boot in the background so the shell receives this view's teardown immediately: leaving before the
+  // first image arrives must not leave these key handlers attached to a view that is gone.
+  (async () => {
+    try {
+      await cursor.loadPage(0);
+      if (destroyed) return;
+      if (!cursor.total) { stageMsg.textContent = 'No images match the current filter'; renderInfo(); }
+      else {
+        let start = 0;
+        if (startId) {
+          const pos = await cursor.positionOf(startId);
+          if (destroyed) return;
+          if (pos >= 0) start = pos;
+          else ui.toast('That image is not in the current list — starting from the first image', { timeout: 4000 });
+        }
+        await goTo(start);
+      }
+    } catch (e) { if (!destroyed) stageMsg.textContent = e.message; }
+    if (!destroyed) resizeCanvas();
+  })();
 
   return () => {
-    destroyed = true; clearTimeout(saveTimer); clearTimeout(classBufTimer); stopAuto();
+    destroyed = true; navToken++;                 // any navigation still in flight bails at its next check
+    clearTimeout(saveTimer); clearTimeout(classBufTimer); stopAuto();
     // Let an in-flight save land first (it updates `version`), then write whatever is still pending.
     const finalSave = () => { if (saving) { setTimeout(finalSave, 30); return; } keepaliveSave('leave'); };
     finalSave();

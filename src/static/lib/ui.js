@@ -94,7 +94,9 @@ export function menu(anchor, items) {
   return el;
 }
 export function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+// An Escape that closes a menu is consumed: views listening on document must not also act on it
+// (e.g. Explore clearing the whole selection when the user only meant to dismiss a context menu).
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && openMenu) { closeMenu(); e.stopImmediatePropagation(); } });
 window.addEventListener('resize', closeMenu);
 
 // ------------------------------------------------------------------ popover (anchored panel that stays open)

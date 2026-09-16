@@ -18,7 +18,10 @@ async function render(el, { ctx, dataset, fovea }) {
   let showOverlay = localStorage.getItem('fovea.overlay') !== '0';
   const selected = new Set();
   let focusIdx = -1, lastClickIdx = -1;
-  let cursor = null, loadingMore = false, destroyed = false;
+  // Paging state. `rendered` is how many tiles exist, contiguous from index 0 — NOT how many items the
+  // cursor holds: Inspect and keyboard navigation load pages out of order, and deriving the next page
+  // from the cache made the grid skip whole pages. `loadingFor` scopes an in-flight load to its cursor.
+  let cursor = null, loadingFor = null, loadingPromise = null, rendered = 0, destroyed = false;
   const TILE_PX = { s: 150, m: 210, l: 300, xl: 420 };
 
   const root = h('div', { class: 'explore' });
@@ -70,29 +73,66 @@ async function render(el, { ctx, dataset, fovea }) {
 
   // ---------------------------------------------------------------- data
   const tiles = new Map(); // index -> element
-  async function reload() {
+  function reload() {
     if (inspect) inspect.close();
     syncUrl(); updateClsLabel();
-    selected.clear(); focusIdx = -1; updateBulk();
+    selected.clear(); focusIdx = -1; lastClickIdx = -1; updateBulk(); grid.classList.remove('selecting');
     cursor = new fovea.ImageCursor({ dsId: ds.id, filters: activeFilters(), sort, order, pageSize: 100, boxes: true });
-    grid.innerHTML = ''; tiles.clear();
+    imgLoader.reset();                       // the old tiles' pending thumbnails will never be shown
+    grid.innerHTML = ''; tiles.clear(); rendered = 0;
     countEl.textContent = '…';
-    await loadMore();
+    return loadMore();
   }
-  async function loadMore() {
-    if (!cursor || loadingMore || destroyed) return;
-    const have = cursor.loadedCount;
-    if (cursor.total != null && have >= cursor.total) { sentinel.innerHTML = ''; return; }
-    loadingMore = true; sentinel.innerHTML = ''; sentinel.appendChild(ui.spinner());
-    const page = Math.floor(have / cursor.pageSize);
-    try {
-      const res = await cursor.loadPage(page);
-      if (destroyed) return;
-      res.items.forEach((it, i) => appendTile(page * cursor.pageSize + i, it));
-      countEl.textContent = `${fmt.num(cursor.total)} image${cursor.total === 1 ? '' : 's'}`;
-      if (cursor.total === 0) grid.appendChild(ui.emptyState({ icon: 'images', title: 'No images match', message: 'Try clearing a filter.', action: h('button', { class: 'btn', onClick: () => { Object.keys(filters).forEach(k => filters[k] = ''); searchInput.value = ''; reload(); } }, 'Clear filters') }));
-    } catch (e) { ui.toast(e.message, { type: 'error' }); }
-    finally { loadingMore = false; sentinel.innerHTML = ''; if (cursor && cursor.total != null && cursor.loadedCount < cursor.total) sentinel.appendChild(h('button', { class: 'btn', onClick: loadMore }, `Load more (${fmt.num(cursor.total - cursor.loadedCount)} left)`)); }
+  /** Append the next page of tiles for the current cursor. Concurrent calls for the same cursor share one
+      load; a load whose cursor was replaced meanwhile (filter/sort change) is discarded, never rendered. */
+  function loadMore() {
+    const c = cursor;
+    if (!c || destroyed) return Promise.resolve();
+    if (loadingFor === c) return loadingPromise;
+    if (c.total != null && rendered >= c.total) { renderSentinel(c); return Promise.resolve(); }
+    loadingFor = c;
+    sentinel.innerHTML = ''; sentinel.appendChild(ui.spinner());
+    loadingPromise = (async () => {
+      let ok = false;
+      const page = Math.floor(rendered / c.pageSize);
+      try {
+        const start = page * c.pageSize;
+        const cached = c.total != null && Array.from({ length: Math.min(c.pageSize, c.total - start) }, (_, k) => c.items[start + k]).every(Boolean);
+        if (!cached) await c.loadPage(page);   // Inspect may already have fetched this page
+        if (destroyed || c !== cursor) return;
+        const end = Math.min(start + c.pageSize, c.total);
+        for (let i = start; i < end && c.items[i]; i++) { if (!tiles.has(i)) appendTile(i, c.items[i]); rendered = i + 1; }
+        countEl.textContent = `${fmt.num(c.total)} image${c.total === 1 ? '' : 's'}`;
+        if (c.total === 0) grid.appendChild(ui.emptyState({ icon: 'images', title: 'No images match', message: 'Try clearing a filter.', action: h('button', { class: 'btn', onClick: () => clearFilters() }, 'Clear filters') }));
+        ok = true;
+      } catch (e) {
+        if (destroyed || c !== cursor) return;
+        countEl.textContent = '—';
+        if (!rendered) {
+          grid.innerHTML = '';
+          grid.appendChild(ui.emptyState({ icon: 'alert', title: 'Could not load images', message: e.message, action: h('button', { class: 'btn btn-primary', onClick: () => reload() }, 'Retry') }));
+        } else ui.toast(e.message, { type: 'error' });
+      } finally {
+        if (loadingFor === c) { loadingFor = null; loadingPromise = null; }
+        if (!destroyed && c === cursor) {
+          renderSentinel(c);
+          // A short grid leaves the sentinel in view, and IntersectionObserver only reports changes:
+          // keep filling while it stays near the viewport (only after a success — never loop on errors).
+          if (ok && c.total != null && rendered < c.total && sentinelNear()) requestAnimationFrame(() => loadMore());
+        }
+      }
+    })();
+    return loadingPromise;
+  }
+  function renderSentinel(c) {
+    sentinel.innerHTML = '';
+    if (c.total != null && rendered < c.total && loadingFor !== c) sentinel.appendChild(h('button', { class: 'btn', onClick: () => loadMore() }, `Load more (${fmt.num(c.total - rendered)} left)`));
+  }
+  function sentinelNear() { const r = sentinel.getBoundingClientRect(), b = body.getBoundingClientRect(); return r.top < b.bottom + 600; }
+  function clearFilters() {
+    Object.keys(filters).forEach(k => filters[k] = '');
+    searchInput.value = ''; splitSeg.setValue(''); labeledSel.value = ''; reviewSel.value = ''; issueSel.value = '';
+    reload();
   }
   const io = new IntersectionObserver((entries) => { if (entries.some(e => e.isIntersecting)) loadMore(); }, { root: body, rootMargin: '600px' });
   io.observe(sentinel);
@@ -141,6 +181,7 @@ async function render(el, { ctx, dataset, fovea }) {
     const old = tiles.get(index); const it = cursor.items[index];
     if (!old || !it) return;
     const n = tile(index, it); tiles.set(index, n); old.replaceWith(n);
+    imgLoader.unobserve(old);
     imgLoader.observe(n._img, n._pic, n);
   }
   /** Point every loaded tile at a different thumbnail size without rebuilding it. The browser keeps
@@ -207,7 +248,7 @@ async function render(el, { ctx, dataset, fovea }) {
     grid.classList.toggle('selecting', selected.size > 0);
     updateBulk();
   }
-  function clearSelection() { selected.clear(); for (const t of tiles.values()) t.classList.remove('selected'); grid.classList.remove('selecting'); updateBulk(); }
+  function clearSelection() { selected.clear(); lastClickIdx = -1; for (const t of tiles.values()) t.classList.remove('selected'); grid.classList.remove('selecting'); updateBulk(); }
   function updateBulk() {
     bulk.classList.toggle('hidden', selected.size === 0);
     if (!selected.size) return;
@@ -250,13 +291,31 @@ async function render(el, { ctx, dataset, fovea }) {
   }
 
   // ---------------------------------------------------------------- keyboard (grid)
-  function cols() { const first = grid.querySelector('.tile'); if (!first) return 1; const w = first.getBoundingClientRect().width + 10; return Math.max(1, Math.floor(grid.clientWidth / w)); }
+  function cols() {
+    const first = grid.querySelector('.tile'); if (!first) return 1;
+    const gap = parseFloat(getComputedStyle(grid).columnGap) || 0;   // n tiles have only n-1 gaps between them
+    return Math.max(1, Math.round((grid.clientWidth + gap) / (first.getBoundingClientRect().width + gap)));
+  }
   function setFocus(i) {
     if (!cursor || cursor.total == null) return;
     i = Math.max(0, Math.min(cursor.total - 1, i));
     const prev = tiles.get(focusIdx); prev && prev.classList.remove('focus');
     focusIdx = i;
-    const t = tiles.get(i); if (t) { t.classList.add('focus'); t.scrollIntoView({ block: 'nearest' }); } else cursor.ensure(i).then(() => loadMore());
+    const t = tiles.get(i);
+    if (t) { t.classList.add('focus'); t.scrollIntoView({ block: 'nearest' }); return; }
+    // Not rendered yet. Fill the grid forward to it when it is close; a far jump (End inside Inspect) just
+    // records the focus — appendTile marks it when the user scrolls there, instead of drawing thousands of tiles.
+    if (i < rendered + 2 * cursor.pageSize) revealFocus(i);
+  }
+  async function revealFocus(i) {
+    const c = cursor;
+    while (!destroyed && c === cursor && focusIdx === i && !tiles.has(i) && c.total != null && rendered < c.total) {
+      const before = rendered;
+      await loadMore();
+      if (rendered === before) break;       // failed or discarded: stop, do not spin
+    }
+    const t = !destroyed && c === cursor && focusIdx === i ? tiles.get(i) : null;
+    if (t) { t.classList.add('focus'); t.scrollIntoView({ block: 'nearest' }); }
   }
   const onKey = (e) => {
     if (isTyping() || ui.hasModal() || e.metaKey || e.ctrlKey || e.altKey) {
@@ -311,16 +370,25 @@ async function render(el, { ctx, dataset, fovea }) {
     stage.appendChild(picHolder);
     document.body.appendChild(rootEl);
 
+    const c0 = cursor;
+    let closed = false;
     async function go(delta) {
-      const n = idx + delta; if (n < 0 || (cursor.total != null && n >= cursor.total)) { if (auto) stopAuto(); return; }
-      const it = await cursor.ensure(n); if (!it) return;
-      idx = n; item = it; activeBox = -1; draw(); cursor.prefetch(idx, 3);
-      const nxt = cursor.items[idx + 1]; if (nxt) { const im = new Image(); im.src = fovea.api.imgUrl(nxt.id); }
-      if (cursor.loadedCount < (cursor.total || 0) && idx > cursor.loadedCount - 30) loadMore();
+      const n = idx + delta; if (n < 0 || (c0.total != null && n >= c0.total)) { if (auto) stopAuto(); return; }
+      const it = await c0.ensure(n); if (!it || closed) return;
+      idx = n; item = it; activeBox = -1; draw(); c0.prefetch(idx, 3);
+      const nxt = c0.items[idx + 1]; if (nxt) { const im = new Image(); im.src = fovea.api.imgUrl(nxt.id); }
+      if (rendered < (c0.total || 0) && idx > rendered - 30) loadMore();   // keep the grid ahead of the viewer
       setFocus(idx);
     }
     function draw() {
-      if (!item) return;
+      if (!item) {
+        // Opened on an index whose page is not loaded yet: show that, then draw once it arrives.
+        posEl.textContent = `${fmt.num(idx + 1)} / ${fmt.num(c0.total)}`;
+        picHolder.innerHTML = ''; picHolder.appendChild(ui.spinner());
+        const want = idx;
+        c0.ensure(want).then((it) => { if (it && !closed && idx === want && !item) { item = it; draw(); } }).catch((e) => { if (!closed) ui.toast(e.message, { type: 'error' }); });
+        return;
+      }
       posEl.textContent = `${fmt.num(idx + 1)} / ${fmt.num(cursor.total)}`;
       nameEl.textContent = item.rel_path;
       picHolder.innerHTML = '';
@@ -356,8 +424,10 @@ async function render(el, { ctx, dataset, fovea }) {
     const key = (e) => {
       if (ui.hasModal()) return;
       if (isTyping()) { if (e.key === 'Escape') e.target.blur(); return; }
+      if (!item && e.key !== 'Escape') return;    // still loading: nothing to review or edit yet
       const k = e.key;
-      if (k === 'Escape') { e.preventDefault(); close(); }
+      // Capture-phase listener: stop here, or the grid's own Escape (clear selection) runs on the same key.
+      if (k === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
       else if (k === 'ArrowRight' || k === 'ArrowDown') { e.preventDefault(); stopAuto(); go(1); }
       else if (k === 'ArrowLeft' || k === 'ArrowUp') { e.preventDefault(); stopAuto(); go(-1); }
       else if (k === 'Home') { e.preventDefault(); go(-idx); }
@@ -369,14 +439,16 @@ async function render(el, { ctx, dataset, fovea }) {
       else if (k.toLowerCase() in REVIEW_KEYS && !e.metaKey && !e.ctrlKey) { const s = REVIEW_KEYS[k.toLowerCase()]; review([item.id], s, noteEl ? noteEl.value : ''); if (s && s !== 'flagged' && !auto) setTimeout(() => go(1), 120); }
     };
     document.addEventListener('keydown', key, true);
-    const close = () => { stopAuto(); document.removeEventListener('keydown', key, true); rootEl.remove(); inspect = null; setFocus(idx); };
+    const close = () => { if (closed) return; closed = true; stopAuto(); document.removeEventListener('keydown', key, true); rootEl.remove(); inspect = null; if (cursor === c0) setFocus(idx); };
     draw(); setFocus(idx); cursor.prefetch(idx, 3);
-    return { close, draw: () => { item = cursor.items[idx] || item; draw(); } };
+    return { close, draw: () => { item = c0.items[idx] || item; draw(); } };
   }
 
   // ---------------------------------------------------------------- lifecycle
-  await reload();
+  // Everything global is registered above and torn down below; the first page loads in the background so
+  // the shell holds this teardown from the start — leaving mid-load must not leak key handlers or observers.
   const offScan = fovea.bus.on('dataset:scanned', (id) => { if (id === ds.id) reload(); });
   const offLabels = fovea.bus.on('labels:changed', ({ item }) => { if (!cursor) return; const i = cursor.indexOfId(item.id); if (i >= 0) { cursor.items[i] = { ...cursor.items[i], ...item }; refreshTile(i); } });
+  reload();
   return () => { destroyed = true; document.removeEventListener('keydown', onKey); io.disconnect(); imgLoader.dispose(); if (inspect) inspect.close(); offScan(); offLabels(); };
 }

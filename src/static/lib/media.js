@@ -77,6 +77,7 @@ export function createImageLoader({ root = null, margin = '800px' } = {}) {
     if (document.hidden) return;
     const h = window.innerHeight || 0;
     for (const [target, holder] of [...pending]) {
+      if (!target.isConnected) { pending.delete(target); io.unobserve(target); continue; }   // tile was discarded
       const r = target.getBoundingClientRect();
       if (r.bottom < -slackPx || r.top > h + slackPx) continue;
       start(holder.img, holder.pic);
@@ -84,7 +85,8 @@ export function createImageLoader({ root = null, margin = '800px' } = {}) {
       io.unobserve(target);
     }
   };
-  document.addEventListener('visibilitychange', () => flushVisible());
+  const onVisible = () => flushVisible();
+  document.addEventListener('visibilitychange', onVisible);
 
   // Safety net. IntersectionObserver is the fast path, but if it ever fails to deliver — a tab that
   // was occluded while the grid was built, a browser quirk — the gallery would sit permanently blank,
@@ -110,11 +112,16 @@ export function createImageLoader({ root = null, margin = '800px' } = {}) {
     },
     /** Load right now regardless of position (e.g. the image the user just jumped to). */
     loadNow(img, pic) { start(img, pic); },
+    /** Forget one tile (it is being replaced). */
+    unobserve(target) { pending.delete(target); io.unobserve(target); },
+    /** Forget every pending tile — the grid was rebuilt, none of them will ever be shown. */
+    reset() { for (const target of pending.keys()) io.unobserve(target); pending.clear(); },
     flushVisible,
     dispose() {
       io.disconnect(); pending.clear();
       scroller.removeEventListener('scroll', onScroll);
       window.removeEventListener('resize', onScroll);
+      document.removeEventListener('visibilitychange', onVisible);
     },
   };
 }

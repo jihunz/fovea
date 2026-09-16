@@ -1,5 +1,16 @@
 // Dataset shell: header, scan banner, tabs (core + plugins). Keeps the shell mounted across tab switches.
 let shell = null; // { dsId, el, content, tabBar, header, banner, tabId, destroyTab, jobWatch }
+let tabSeq = 0;    // increments per tab render; a render that finishes after a newer one started is stale
+
+/** Tear down one specific shell. Destroy callbacks outlive their render and must never touch a newer shell. */
+function teardownShell(s) {
+  try { s.destroyTab && s.destroyTab(); } catch (e) { console.error(e); }
+  s.destroyTab = null;
+  try { s.stopWatch && s.stopWatch(); } catch (e) { console.error(e); }
+  s.stopWatch = null;
+  s.tabToken = ++tabSeq;
+  if (shell === s) shell = null;
+}
 
 export function install(fovea) {}
 
@@ -15,23 +26,30 @@ export async function render(ctx, fovea, tabId) {
   catch (e) { fovea.setView('ds-missing', ui.emptyState({ icon: 'alert', title: 'Dataset not found', message: e.message, action: link('/', { class: 'btn' }, 'Back home') })); return; }
 
   if (!shell || shell.dsId !== id || !shell.el.isConnected) {
-    if (shell && shell.destroyTab) { try { shell.destroyTab(); } catch (e) {} }
-    shell = buildShell(ds);
-    fovea.setView('dataset:' + id, shell.el, () => { if (shell) { shell.destroyTab && shell.destroyTab(); shell.stopWatch && shell.stopWatch(); shell = null; } });
+    const s = buildShell(ds);                       // becomes the module-level `shell`
+    // setView runs the previous view's destroy first; it is bound to ITS shell, so it cannot null this one.
+    fovea.setView('dataset:' + id, s.el, () => teardownShell(s));
   } else {
     updateHeader(ds);
   }
-  if (shell.tabId !== tab.id || !shell.content.firstChild) {
-    if (shell.destroyTab) { try { shell.destroyTab(); } catch (e) {} shell.destroyTab = null; }
-    shell.tabId = tab.id;
-    shell.content.innerHTML = '';
-    Array.from(shell.tabBar.children).forEach(b => b.classList.toggle('active', b.dataset.tab === tab.id));
+  const s = shell;
+  if (!s) return;
+  if (s.tabId !== tab.id || !s.content.firstChild) {
+    if (s.destroyTab) { try { s.destroyTab(); } catch (e) { console.error(e); } s.destroyTab = null; }
+    const token = s.tabToken = ++tabSeq;
+    s.tabId = tab.id;
+    s.content.innerHTML = '';
+    Array.from(s.tabBar.children).forEach(b => b.classList.toggle('active', b.dataset.tab === tab.id));
     document.title = `${ds.name} · ${tab.label} · Fovea`;
-    const res = await tab.render(shell.content, { ctx, dataset: ds, fovea, refresh: () => refreshDataset(ds.id) });
-    if (typeof res === 'function') shell.destroyTab = res;
-  } else {
-    shell.onRouteUpdate && shell.onRouteUpdate(ctx);
+    const res = await tab.render(s.content, { ctx, dataset: ds, fovea, refresh: () => refreshDataset(ds.id) });
+    if (typeof res === 'function') {
+      // Tabs render asynchronously. If another tab (or dataset) took over meanwhile, this tab's listeners
+      // are already live — tear it down now rather than leak its global key handlers into the next view.
+      if (shell === s && s.tabToken === token) s.destroyTab = res;
+      else { try { res(); } catch (e) { console.error(e); } }
+    }
   }
+  // Same dataset and tab: nothing to re-render. Tabs keep their query in sync via router.replaceQuery.
 
   function buildShell(ds) {
     const el = h('div', { style: 'display:flex;flex-direction:column;height:100%;min-height:0' });
