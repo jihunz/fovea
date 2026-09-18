@@ -59,6 +59,13 @@ export const fmt = {
   },
   date(ts) { return ts ? new Date(ts * 1000).toLocaleString() : '–'; },
   dur(sec) { if (sec == null) return '–'; if (sec < 60) return `${sec.toFixed(sec < 10 ? 1 : 0)}s`; const m = Math.floor(sec / 60); return `${m}m ${Math.round(sec - m * 60)}s`; },
+  /** Elapsed time as a clock: 0:07, 12:05, 1:02:03. */
+  clock(sec) {
+    if (sec == null || !isFinite(sec)) return '–';
+    sec = Math.max(0, Math.floor(sec));
+    const hh = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60), ss = sec % 60;
+    return (hh ? `${hh}:${String(mm).padStart(2, '0')}` : String(mm)) + ':' + String(ss).padStart(2, '0');
+  },
   fixed(n, d = 3) { return n == null ? '–' : Number(n).toFixed(d); },
 };
 

@@ -1,4 +1,4 @@
-import { h, clear, mount, on, isTyping } from './dom.js';
+import { h, clear, mount, on, isTyping, fmt } from './dom.js';
 import { icon } from './icons.js';
 
 // ------------------------------------------------------------------ toast
@@ -182,6 +182,17 @@ document.addEventListener('mousedown', () => { clearTimeout(tipTimer); tipEl && 
 
 // ------------------------------------------------------------------ small bits
 export function kbd(k) { return h('span', { class: 'kbd' }, k); }
+/** Elapsed-time readout for long operations. With no time shown a wait feels longer and less certain, and a
+    countdown frustrates more than elapsed time (docs/visual-comfort.md). Ticks once a second, with tabular
+    digits so nothing shifts, and stops by itself once the element leaves the page. */
+export function elapsedClock(startedAtMs = Date.now()) {
+  const el = h('span', { class: 'elapsed' });
+  const render = () => { el.textContent = fmt.clock((Date.now() - startedAtMs) / 1000); };
+  render();
+  const t = setInterval(() => { if (!el.isConnected) { clearInterval(t); return; } render(); }, 1000);
+  el.stop = () => clearInterval(t);
+  return el;
+}
 export function spinner() { return h('span', { class: 'spinner' }); }
 export function chip(text, { type = '', icon: ic, onClick, onRemove, cls = '' } = {}) {
   return h('span', { class: `chip ${type} ${onClick ? 'clickable' : ''} ${cls}`, onClick }, ic ? icon(ic, 12) : null, text,

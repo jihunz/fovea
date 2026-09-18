@@ -67,6 +67,8 @@ Docker 구성은 호스트의 모든 네트워크 인터페이스에 8888 포트
 
 `⌘K` 명령 팔레트, `?` 단축키 도움말, `G` 다음 `H/O/E/A/F` 로 페이지 이동.
 
+**시각 피로** — 몇 시간씩 이미지를 넘겨 보는 작업을 전제로 설계했습니다. 이미지 전환은 항상 즉시(다음 이미지가 디코딩될 때까지 현재 이미지를 유지한 뒤 한 번에 교체) 일어나며, 페이드·빈 화면·깜박이는 자리표시자·반복 애니메이션이 없습니다. **Settings → Visual comfort** 에서 화면 어둡게, 이미지 주변 배경(검정/짙은 회색/회색), 선택형 휴식 알림을 기기별로 설정할 수 있습니다. 규칙과 2024–2026 연구 근거: [docs/visual-comfort.md](docs/visual-comfort.md).
+
 ## 구조
 
 ```
@@ -82,7 +84,7 @@ src/
 ├─ static/                # 빌드 없는 ES 모듈 프런트엔드
 │  ├─ fovea.css           # 디자인 시스템 (라이트/다크)
 │  ├─ app.js              # 셸·라우터·사이드바·커맨드 팔레트·플러그인 로딩
-│  ├─ lib/                # dom · router · api · ui(모달/메뉴/토스트) · cursor(페이지 커서) · overlay · icons
+│  ├─ lib/                # dom · router · api · ui(모달/메뉴/토스트) · cursor(페이지 커서) · overlay · icons · media(이미지 로딩·프레임 캐시) · comfort(시각 피로 설정)
 │  └─ views/              # home · dataset(셸) · overview · explore(+inspect) · annotate · files · export · settings
 ├─ templates/app.html     # SPA 셸
 ├─ tests/                 # pytest (레이아웃 감지, 라벨 파싱, 매칭/AP)

@@ -85,8 +85,10 @@ async function render(el, { dataset, fovea, refresh }) {
     try {
       const { job } = await fovea.api.post(`/api/datasets/${ds.id}/export/copy`, { filters: filtersOf(), target_dir: target, resize: resizeSpec(), include_unlabeled: f.includeUnlabeled, include_yaml: f.yaml });
       const bar = ui.progress(0); const txt = h('span', { class: 'small muted' }, 'Copying…');
-      jobBox.innerHTML = ''; jobBox.appendChild(h('div', { class: 'col gap-4' }, txt, bar));
+      const clock = ui.elapsedClock();
+      jobBox.innerHTML = ''; jobBox.appendChild(h('div', { class: 'col gap-4' }, h('div', { class: 'row' }, txt, h('span', { class: 'spacer' }), clock), bar));
       const snap = await fovea.api.watchJob(job.id, (s) => { txt.textContent = s.message; bar.firstChild.style.width = `${Math.round(s.progress * 100)}%`; });
+      clock.stop();
       if (snap.status === 'cancelled') { txt.textContent = 'Cancelled — files copied before the cancel were kept.'; ui.toast('Copy cancelled'); return; }
       const r = snap.result || {};
       const extra = [r.failed ? `${fmt.num(r.failed)} unreadable images skipped` : '', r.skipped_same_file ? `${fmt.num(r.skipped_same_file)} source files left untouched` : ''].filter(Boolean).join(' · ');

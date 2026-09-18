@@ -61,7 +61,7 @@ async function render(el, { ctx, dataset, fovea }, F, API) {
     try {
       const { job, eval_id } = await F.api.post(`${API}/evaluate`, { dataset_id: ds.id, pred_a: setup.pred_a, pred_b: setup.pred_b || null, iou: setup.iou, conf: setup.conf, filters: setup.split ? { split: setup.split } : {} });
       const bar = ui.progress(0); const txt = h('span', { class: 'small muted' }, 'Queued…');
-      progress.innerHTML = ''; progress.appendChild(h('div', { class: 'col gap-4' }, txt, bar));
+      progress.innerHTML = ''; progress.appendChild(h('div', { class: 'col gap-4' }, h('div', { class: 'row' }, txt, h('span', { class: 'spacer' }), ui.elapsedClock()), bar));
       const snap = await F.api.watchJob(job.id, s => { txt.textContent = s.message; bar.firstChild.style.width = `${Math.round(s.progress * 100)}%`; });
       progress.innerHTML = '';
       if (snap.status === 'cancelled') { ui.toast('Evaluation cancelled'); return; }
@@ -150,7 +150,7 @@ async function render(el, { ctx, dataset, fovea }, F, API) {
     let i = rowIdx; const layers = { gt: true, pred: true, labels: true };
     const rootEl = h('div', { class: 'inspect', style: `grid-template-columns:1fr;grid-template-rows:44px 1fr` });
     const top = h('div', { class: 'inspect-top' });
-    const stageWrap = h('div', { style: `display:grid;grid-template-columns:${hasB ? '1fr 1fr' : '1fr'};gap:2px;min-height:0;background:#000` });
+    const stageWrap = h('div', { style: `display:grid;grid-template-columns:${hasB ? '1fr 1fr' : '1fr'};gap:2px;min-height:0;background:var(--stage)` });
     rootEl.appendChild(top); rootEl.appendChild(stageWrap); document.body.appendChild(rootEl);
     const pos = h('span', { class: 'mono small' }); const name = h('span', { class: 'name grow' });
     const tog = (key, label) => { const b = h('button', { class: cls('btn btn-sm', layers[key] && 'active'), onClick: () => { layers[key] = !layers[key]; b.classList.toggle('active', layers[key]); draw(); } }, label); return b; };

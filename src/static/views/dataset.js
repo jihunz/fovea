@@ -147,7 +147,8 @@ export async function render(ctx, fovea, tabId) {
     s.banner.classList.remove('hidden');
     const bar = ui.progress(job.progress || 0, { indeterminate: !job.total });
     const txt = h('span', jobText(job));
-    s.banner.innerHTML = ''; s.banner.appendChild(icon('refresh', 14)); s.banner.appendChild(txt); s.banner.appendChild(bar);
+    const clock = ui.elapsedClock(Date.now() - (job.elapsed || 0) * 1000);
+    s.banner.innerHTML = ''; s.banner.appendChild(icon('refresh', 14)); s.banner.appendChild(txt); s.banner.appendChild(clock); s.banner.appendChild(bar);
     s.banner.appendChild(h('button', { class: 'btn btn-sm btn-ghost', onClick: () => fovea.api.post(`/api/jobs/${job.id}/cancel`) }, 'Cancel'));
     const w = fovea.api.watchJob(job.id, (snap) => { txt.textContent = jobText(snap); bar.className = `progress ${snap.total ? '' : 'indeterminate'}`; bar.firstChild.style.width = `${Math.round((snap.progress || 0) * 100)}%`; });
     // One stream per shell, closed when the shell goes away — leaked EventSources exhaust the browser's
@@ -155,14 +156,14 @@ export async function render(ctx, fovea, tabId) {
     s.stopWatch = () => { w.stop(); s.watchingJob = null; };
     const what = job.kind === 'scan' ? 'Index' : job.kind;
     w.then(async (snap) => {
-      s.watchingJob = null; s.stopWatch = null; s.banner.classList.add('hidden');
+      s.watchingJob = null; s.stopWatch = null; s.banner.classList.add('hidden'); s.banner.replaceChildren();
       if (snap.status === 'done') ui.toast(`${what} finished · ${fmt.num(snap.result && snap.result.images)} images`, { type: 'ok' });
       else if (snap.status === 'cancelled') ui.toast(`${what} cancelled`);
       await fovea.loadDatasets();
       if (shell !== s) return;                     // never refresh a dataset the user has already left
       await refreshDataset(ds.id); fovea.bus.emit('dataset:scanned', ds.id);
     }).catch(async (e) => {
-      s.watchingJob = null; s.stopWatch = null; s.banner.classList.add('hidden');
+      s.watchingJob = null; s.stopWatch = null; s.banner.classList.add('hidden'); s.banner.replaceChildren();
       ui.toast('Job failed: ' + e.message, { type: 'error' });
       if (shell === s) await refreshDataset(ds.id);
     });

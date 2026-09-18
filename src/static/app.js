@@ -9,6 +9,7 @@ import * as colors from './lib/colors.js';
 import { boxLayer } from './lib/overlay.js';
 import { ImageCursor } from './lib/cursor.js';
 import * as media from './lib/media.js';
+import { comfort } from './lib/comfort.js';
 
 const { get, post, put, patch, del, watchJob, imgUrl, thumbUrl } = apiMod;
 
@@ -22,6 +23,7 @@ export const fovea = {
   api: { get, post, put, patch, del, watchJob, imgUrl, thumbUrl, ApiError: apiMod.ApiError },
   router, link, ui, colors, boxLayer, ImageCursor, state, bus,
   media,   // image loading for plugins: trackImage, createFrameCache (hold-then-swap, see docs/visual-comfort.md)
+  comfort, // screen dimming, image surround, rest reminder (per device)
   config: window.FOVEA || {},
   registerTab(tab) { const i = tabs.findIndex(t => t.id === tab.id); if (i >= 0) tabs[i] = tab; else tabs.push(tab); tabs.sort((a, b) => (a.order ?? 50) - (b.order ?? 50)); },
   tabs: () => tabs.slice(),
@@ -168,6 +170,7 @@ document.addEventListener('keydown', (e) => {
 // ------------------------------------------------------------------ boot
 async function boot() {
   document.documentElement.setAttribute('data-theme', state.get().theme);
+  comfort.init();
   const [home, dataset, overview, explore, annotate, files, exportV, settings] = await Promise.all([
     import('./views/home.js'), import('./views/dataset.js'), import('./views/overview.js'), import('./views/explore.js'),
     import('./views/annotate.js'), import('./views/files.js'), import('./views/export.js'), import('./views/settings.js'),

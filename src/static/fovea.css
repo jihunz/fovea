@@ -19,7 +19,7 @@
   --border-strong: #cfcfca;
   --text: #17181a;
   --text-2: #5b5c5f;
-  --text-3: #8b8c90;
+  --text-3: #6a6b6f;          /* ≥ 4.5:1 on --surface-2; faint text is still text people read */
   --accent: #0f766e;
   --on-accent: #fff;            /* text/icons placed ON an accent fill */
   --accent-hover: #0b5f59;
@@ -31,7 +31,7 @@
   --danger: #dc2626; --danger-soft: #fde8e8;
   --info: #2563eb; --info-soft: #e7eefc;
   --approve: #16a34a; --flag: #d97706; --exclude: #dc2626;
-  --stage: #0d0e10;
+  --stage: #1c1d20;            /* image surround — Settings → Visual comfort: black | dark gray | gray */
   --tile-bg: #e7e7e3;
   --shadow-sm: 0 1px 2px rgba(16, 18, 20, 0.06), 0 1px 1px rgba(16, 18, 20, 0.04);
   --shadow-md: 0 4px 14px rgba(16, 18, 20, 0.10), 0 1px 3px rgba(16, 18, 20, 0.06);
@@ -51,7 +51,7 @@
   --border-strong: #35363c;
   --text: #ececec;
   --text-2: #a4a5aa;
-  --text-3: #6f7076;
+  --text-3: #88898d;          /* ≥ 4.5:1 on --surface-2 */
   --accent: #2dd4bf;
   --on-accent: #06231f;
   --accent-hover: #5eead4;
@@ -63,7 +63,7 @@
   --danger: #ef4444; --danger-soft: rgba(239,68,68,.16);
   --info: #60a5fa; --info-soft: rgba(96,165,250,.15);
   --approve: #22c55e; --flag: #f59e0b; --exclude: #ef4444;
-  --stage: #08090a;
+  --stage: #1c1d20;
   --tile-bg: #101114;
   --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
   --shadow-md: 0 4px 14px rgba(0,0,0,.5);
@@ -74,11 +74,11 @@
   [data-theme="system"] {
     --bg: #0f1012; --surface: #17181b; --surface-2: #1e1f23; --surface-3: #26272c;
     --border: #26272c; --border-strong: #35363c;
-    --text: #ececec; --text-2: #a4a5aa; --text-3: #6f7076;
+    --text: #ececec; --text-2: #a4a5aa; --text-3: #88898d;
     --accent: #2dd4bf; --accent-hover: #5eead4; --accent-soft: rgba(45,212,191,.13); --accent-text: #5eead4; --accent-ring: rgba(45,212,191,.32); --on-accent: #06231f;
     --ok: #22c55e; --ok-soft: rgba(34,197,94,.15); --warn: #f59e0b; --warn-soft: rgba(245,158,11,.15);
     --danger: #ef4444; --danger-soft: rgba(239,68,68,.16); --info: #60a5fa; --info-soft: rgba(96,165,250,.15);
-    --approve: #22c55e; --flag: #f59e0b; --exclude: #ef4444; --stage: #08090a; --tile-bg: #101114;
+    --approve: #22c55e; --flag: #f59e0b; --exclude: #ef4444; --stage: #1c1d20; --tile-bg: #101114;
     --shadow-sm: 0 1px 2px rgba(0,0,0,.4); --shadow-md: 0 4px 14px rgba(0,0,0,.5); --shadow-lg: 0 18px 50px rgba(0,0,0,.7);
     color-scheme: dark;
   }
@@ -218,7 +218,7 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .input-wrap .kbd { position: absolute; right: 7px; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > .label { font-size: 12px; font-weight: 600; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
-.field .hint { font-size: 11.5px; color: var(--text-3); }
+.field .hint, .hint { font-size: 11.5px; color: var(--text-3); line-height: 1.45; }
 .fields { display: grid; gap: 14px; }
 .fields.cols-2 { grid-template-columns: 1fr 1fr; }
 .check { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: 13px; }
@@ -524,7 +524,7 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .ann-stage canvas { display: block; position: absolute; inset: 0; }
 .ann-stage .hud { position: absolute; left: 10px; bottom: 10px; display: flex; gap: 6px; }
 .ann-stage .hud .chip { background: rgba(0,0,0,.55); color: #ddd; backdrop-filter: blur(4px); }
-.ann-stage .stage-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #9a9b9f; pointer-events: none; }
+.ann-stage .stage-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #c4c5c9; pointer-events: none; }
 .ann-stage .stage-lock { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); color: #fff; font-weight: 600; z-index: 3; gap: 10px; }
 .ann-bottom { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-top: 1px solid var(--border); background: var(--surface); }
 .ann-bottom .name { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -596,6 +596,17 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .ds-alert { display: flex; align-items: center; gap: 10px; padding: 9px 20px; background: var(--danger-soft); color: var(--danger); font-size: 12.5px; border-bottom: 1px solid var(--border); }
 .ds-alert .grow { color: var(--text); }
 .ds-alert .mono { color: var(--text-2); }
+
+/* ---------------------------------------------------------------- visual comfort (static/lib/comfort.js)
+   Per-device preferences. Dimming is one uniform, static layer over everything Fovea draws; the image
+   surround swaps a single token. Neither animates. */
+html[data-stage="black"] { --stage: #0b0c0e; }
+html[data-stage="gray"] { --stage: #3c3d41; }
+html[data-dim] body::after { content: ''; position: fixed; inset: 0; background: #000; opacity: var(--dim, 0); pointer-events: none; z-index: 2147483647; }
+.rest-banner { position: fixed; top: 14px; right: 16px; z-index: 250; max-width: 380px; display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-md); font-size: 13px; }
+.rest-banner > .ico { color: var(--accent-text); margin-top: 2px; flex: none; }
+.rest-banner .small { color: var(--text-2); }
+.elapsed { font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-2); }
 
 /* ---------------------------------------------------------------- reduced motion
    The OS setting removes even the small user-triggered transitions (switch knobs, hover colours) and

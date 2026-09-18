@@ -670,7 +670,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
       try {
         const { job } = await fovea.api.post('/api/ai/autolabel', body);
         const bar = ui.progress(0); const txt = h('span', { class: 'xs muted' }, 'Queued…');
-        progress.innerHTML = ''; progress.appendChild(h('div', { class: 'col gap-4' }, h('div', { class: 'row' }, txt, h('span', { class: 'spacer' }), h('button', { class: 'btn btn-ghost btn-sm', onClick: () => fovea.api.post(`/api/jobs/${job.id}/cancel`) }, 'Cancel')), bar));
+        progress.innerHTML = ''; progress.appendChild(h('div', { class: 'col gap-4' }, h('div', { class: 'row' }, txt, h('span', { class: 'spacer' }), ui.elapsedClock(), h('button', { class: 'btn btn-ghost btn-sm', onClick: () => fovea.api.post(`/api/jobs/${job.id}/cancel`) }, 'Cancel')), bar));
         const snap = await fovea.api.watchJob(job.id, (s) => { txt.textContent = s.message; bar.firstChild.style.width = `${Math.round(s.progress * 100)}%`; });
         progress.innerHTML = '';
         if (snap.status === 'cancelled') ui.toast('Auto-label cancelled — images labeled before the cancel keep their boxes');
