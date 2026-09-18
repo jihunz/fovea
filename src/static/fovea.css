@@ -1,5 +1,11 @@
 /* ==========================================================================
    Fovea design system — dense, calm, image-first. Light by default, dark aware.
+
+   Visual comfort policy (docs/visual-comfort.md). People review images here for hours, so:
+   · an image change is one luminance step — never a fade, blank or animated placeholder in between;
+   · nothing loops, pulses, blinks or shimmers; state changes are instant;
+   · wait indicators appear only after 400 ms, so fast operations show nothing at all;
+   · with the OS "reduce motion" setting, the few remaining transitions are switched off too.
    ========================================================================== */
 :root {
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans KR', sans-serif;
@@ -139,7 +145,7 @@ button { cursor: pointer; }
 .sb-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sb-item .count { font-size: 11px; color: var(--text-3); font-family: var(--mono); }
 .sb-item .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }
-.sb-item .dot.ready { background: var(--ok); } .sb-item .dot.scanning { background: var(--warn); animation: blink 1s infinite; } .sb-item .dot.error, .sb-item .dot.unreachable { background: var(--danger); }
+.sb-item .dot.ready { background: var(--ok); } .sb-item .dot.scanning { background: var(--warn); } .sb-item .dot.error, .sb-item .dot.unreachable { background: var(--danger); }
 .sb-datasets { flex: 1; min-height: 0; overflow-y: auto; }
 .sb-footer { padding: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
 .sb-kbd-hint { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; color: var(--text-3); font-size: 11.5px; }
@@ -244,9 +250,8 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; display: inline-block; }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .status-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
-.status-pill .dot.ready { background: var(--ok); } .status-pill .dot.scanning { background: var(--warn); animation: blink 1s infinite; }
+.status-pill .dot.ready { background: var(--ok); } .status-pill .dot.scanning { background: var(--warn); }
 .status-pill .dot.new { background: var(--text-3); } .status-pill .dot.error, .status-pill .dot.unreachable { background: var(--danger); }
-@keyframes blink { 50% { opacity: .35; } }
 
 /* ---------------------------------------------------------------- cards, tables */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); }
@@ -274,8 +279,7 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .bar > i.ok { background: var(--ok); } .bar > i.warn { background: var(--warn); } .bar > i.danger { background: var(--danger); }
 .progress { height: 4px; background: var(--surface-3); border-radius: 2px; overflow: hidden; }
 .progress > i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
-.progress.indeterminate > i { width: 40%; animation: indet 1.2s infinite ease-in-out; }
-@keyframes indet { 0% { transform: translateX(-100%);} 100% { transform: translateX(260%);} }
+.progress.indeterminate > i { width: 100% !important; opacity: .35; }
 
 /* ---------------------------------------------------------------- tabs */
 .tabs { display: flex; align-items: center; gap: 2px; padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; overflow-x: auto; }
@@ -293,10 +297,8 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .ds-scan .progress { flex: 1; max-width: 320px; background: rgba(0,0,0,.08); } .ds-scan .progress > i { background: var(--warn); }
 
 /* ---------------------------------------------------------------- overlays: modal, drawer, toast, menu, palette */
-.backdrop { position: fixed; inset: 0; background: rgba(12, 13, 15, .45); z-index: 100; display: flex; align-items: center; justify-content: center; animation: fade .12s ease-out; backdrop-filter: blur(2px); }
-@keyframes fade { from { opacity: 0; } }
-@keyframes pop { from { opacity: 0; transform: translateY(6px) scale(.985); } }
-.modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); box-shadow: var(--shadow-lg); width: min(560px, 94vw); max-height: 90vh; display: flex; flex-direction: column; animation: pop .16s ease-out; }
+.backdrop { position: fixed; inset: 0; background: rgba(12, 13, 15, .45); z-index: 100; display: flex; align-items: center; justify-content: center; }
+.modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); box-shadow: var(--shadow-lg); width: min(560px, 94vw); max-height: 90vh; display: flex; flex-direction: column; }
 .modal.lg { width: min(820px, 94vw); }
 .modal.xl { width: min(1080px, 96vw); }
 .modal-header { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
@@ -304,11 +306,11 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .modal-body { padding: 16px 18px; overflow: auto; }
 .modal-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); }
 .toast-stack { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 300; align-items: center; pointer-events: none; }
-.toast { pointer-events: auto; background: var(--text); color: var(--bg); padding: 9px 14px; border-radius: var(--r); box-shadow: var(--shadow-md); font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 10px; animation: pop .15s ease-out; max-width: 560px; }
+.toast { pointer-events: auto; background: var(--text); color: var(--bg); padding: 9px 14px; border-radius: var(--r); box-shadow: var(--shadow-md); font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 10px; max-width: 560px; }
 .toast.error { background: var(--danger); color: #fff; } .toast.ok { background: var(--ok); color: #fff; }
 .toast .btn { height: 24px; font-size: 12px; background: transparent; border-color: color-mix(in srgb, currentColor 35%, transparent); color: inherit; box-shadow: none; }
 .toast .btn:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
-.menu { position: fixed; z-index: 200; min-width: 180px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-md); padding: 4px; animation: pop .12s ease-out; }
+.menu { position: fixed; z-index: 200; min-width: 180px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-md); padding: 4px; }
 .menu-item { display: flex; align-items: center; gap: 9px; padding: 6px 9px; border-radius: 5px; cursor: pointer; font-size: 13px; width: 100%; border: 0; background: none; text-align: left; color: var(--text); }
 .menu-item:hover, .menu-item:focus-visible { background: var(--surface-2); outline: none; }
 .menu-item.danger { color: var(--danger); }
@@ -316,7 +318,7 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .menu-item .kbd { margin-left: auto; }
 .menu-sep { height: 1px; background: var(--border); margin: 4px 0; }
 .menu-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); padding: 6px 9px 2px; }
-.palette { width: min(620px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); box-shadow: var(--shadow-lg); overflow: hidden; animation: pop .14s ease-out; align-self: flex-start; margin-top: 12vh; }
+.palette { width: min(620px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); box-shadow: var(--shadow-lg); overflow: hidden; align-self: flex-start; margin-top: 12vh; }
 .palette .input-wrap .input { height: 46px; border: 0; border-radius: 0; font-size: 15px; padding-left: 40px; box-shadow: none; }
 .palette .input-wrap .ico { left: 14px; width: 18px; height: 18px; }
 .palette-list { max-height: 50vh; overflow: auto; padding: 6px; border-top: 1px solid var(--border); }
@@ -329,10 +331,12 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .empty .ico { width: 36px; height: 36px; color: var(--text-3); }
 .empty h3 { margin: 4px 0 0; font-size: 15px; color: var(--text); }
 .empty p { margin: 0; max-width: 420px; }
-.skeleton { background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%); background-size: 400% 100%; animation: shimmer 1.3s infinite; border-radius: 6px; }
-@keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
-.spinner { width: 16px; height: 16px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+.skeleton { background: var(--surface-2); border-radius: 6px; }
+/* Spinners stay invisible for the first 400 ms: a quick operation shows nothing, a slow one shows a
+   calm, slow indicator. */
+.spinner { width: 16px; height: 16px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 1.1s linear infinite, appear-late 0s linear .4s both; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes appear-late { from { visibility: hidden; } to { visibility: visible; } }
 .tip { position: fixed; z-index: 400; background: var(--text); color: var(--bg); font-size: 11.5px; padding: 4px 8px; border-radius: 5px; pointer-events: none; white-space: nowrap; box-shadow: var(--shadow-md); }
 .callout { display: flex; gap: 10px; padding: 10px 12px; border-radius: var(--r); font-size: 12.5px; background: var(--info-soft); color: var(--text); border: 1px solid transparent; }
 .callout.warn { background: var(--warn-soft); } .callout.danger { background: var(--danger-soft); } .callout.ok { background: var(--ok-soft); }
@@ -344,8 +348,8 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 
 /* ---------------------------------------------------------------- home / dataset cards */
 .ds-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.ds-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--shadow-sm); cursor: pointer; transition: border-color .12s, box-shadow .12s, transform .12s; display: flex; flex-direction: column; }
-.ds-card:hover { border-color: var(--accent); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.ds-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--shadow-sm); cursor: pointer; transition: border-color .12s, box-shadow .12s; display: flex; flex-direction: column; }
+.ds-card:hover { border-color: var(--accent); box-shadow: var(--shadow-md); }
 .ds-card .cover { aspect-ratio: 16 / 9; background: var(--tile-bg); position: relative; overflow: hidden; }
 .ds-card .cover img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: .95; }
 .ds-card .cover .pic { position: absolute; inset: 0; }
@@ -427,14 +431,12 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .tile .frame svg.ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 
 /* --- image load states (see static/lib/media.js) ------------------------------------------------
-   Without these, a tile that has not painted yet is a black rectangle with box outlines floating
-   on it, and a thumbnail that fails stays black forever with no explanation. */
-.pic.is-loading { background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%); background-size: 400% 100%; animation: shimmer 1.3s infinite; }
-/* never draw boxes on top of an image that is not there yet — that is what "broken" looks like */
+   A picture is either absent — the flat frame colour shows, no shimmer — or fully decoded and shown
+   in one step. It never fades in: a fade turns one luminance change into many, on every image. And
+   boxes are never drawn on top of an image that is not there yet — that is what "broken" looks like. */
 .pic.is-idle > img, .pic.is-loading > img { opacity: 0; }
 .pic.is-idle > .ov, .pic.is-loading > .ov, .pic.is-error > .ov { opacity: 0; }
-.pic.is-ready > img { opacity: 1; animation: imgIn .18s ease-out; }
-@keyframes imgIn { from { opacity: 0; } }
+.pic.is-ready > img { opacity: 1; }
 .pic.is-error { background: var(--surface-2); display: flex; align-items: center; justify-content: center; }
 .pic.is-error > img, .pic.is-error > .ov { display: none; }
 .pic.is-error::after {
@@ -463,7 +465,7 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .tile .issue-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
 .grid.list .tile { display: grid; grid-template-columns: 96px 1fr; } .grid.list { grid-template-columns: 1fr; gap: 6px; }
 .grid.list .tile .frame { aspect-ratio: 4 / 3; }
-.bulk-bar { position: sticky; bottom: 0; margin: 12px auto 0; width: max-content; max-width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--text); color: var(--bg); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); z-index: 5; animation: pop .15s ease-out; }
+.bulk-bar { position: sticky; bottom: 0; margin: 12px auto 0; width: max-content; max-width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--text); color: var(--bg); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); z-index: 5; }
 /* The bar is an inverse surface (light in the dark theme), so buttons tint with its own foreground. */
 .bulk-bar .btn { height: 26px; font-size: 12px; background: transparent; border-color: color-mix(in srgb, currentColor 35%, transparent); color: inherit; box-shadow: none; }
 .bulk-bar .btn:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
@@ -474,7 +476,12 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .filter-pop .check:hover { background: var(--surface-2); }
 
 /* ---------------------------------------------------------------- inspect (overlay) */
-.inspect { position: fixed; inset: 0; z-index: 90; background: var(--stage); display: grid; grid-template-columns: 1fr 320px; grid-template-rows: 44px 1fr; color: #e8e8e8; animation: fade .12s; }
+.inspect { position: fixed; inset: 0; z-index: 90; background: var(--stage); display: grid; grid-template-columns: 1fr 320px; grid-template-rows: 44px 1fr; color: #e8e8e8; }
+.inspect-status { font-size: 12px; color: #a9aaaf; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30ch; }
+.inspect-status[data-status="approved"] { color: #86efac; } .inspect-status[data-status="flagged"] { color: #fcd34d; } .inspect-status[data-status="excluded"] { color: #fca5a5; }
+.inspect-wait { position: absolute; top: 12px; right: 12px; pointer-events: none; }
+.inspect-stage .pic.is-error { min-width: 260px; min-height: 160px; border-radius: 8px; background: rgba(255,255,255,.04); color: #a9aaaf; }
+.inspect-stage .pic.is-error::after { content: '⚠  Image could not be loaded'; font-size: 13px; color: #fcd34d; }
 .inspect-top { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: rgba(255,255,255,.04); border-bottom: 1px solid rgba(255,255,255,.08); }
 .inspect-top .name { font-family: var(--mono); font-size: 12px; color: #cfcfcf; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspect-top .btn { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.12); color: #e8e8e8; box-shadow: none; }
@@ -589,3 +596,11 @@ textarea.input { height: auto; padding: 7px 9px; resize: vertical; line-height: 
 .ds-alert { display: flex; align-items: center; gap: 10px; padding: 9px 20px; background: var(--danger-soft); color: var(--danger); font-size: 12.5px; border-bottom: 1px solid var(--border); }
 .ds-alert .grow { color: var(--text); }
 .ds-alert .mono { color: var(--text-2); }
+
+/* ---------------------------------------------------------------- reduced motion
+   The OS setting removes even the small user-triggered transitions (switch knobs, hover colours) and
+   stops the spinner turning. Nothing here depends on an animation finishing. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0s !important; scroll-behavior: auto !important; }
+  .spinner { animation: appear-late 0s linear .4s both; border-top-color: var(--accent); }
+}

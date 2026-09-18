@@ -8,6 +8,7 @@ import * as ui from './lib/ui.js';
 import * as colors from './lib/colors.js';
 import { boxLayer } from './lib/overlay.js';
 import { ImageCursor } from './lib/cursor.js';
+import * as media from './lib/media.js';
 
 const { get, post, put, patch, del, watchJob, imgUrl, thumbUrl } = apiMod;
 
@@ -20,6 +21,7 @@ export const fovea = {
   h, svg, icon, logo, fmt, cls, MOD, isTyping, debounce,
   api: { get, post, put, patch, del, watchJob, imgUrl, thumbUrl, ApiError: apiMod.ApiError },
   router, link, ui, colors, boxLayer, ImageCursor, state, bus,
+  media,   // image loading for plugins: trackImage, createFrameCache (hold-then-swap, see docs/visual-comfort.md)
   config: window.FOVEA || {},
   registerTab(tab) { const i = tabs.findIndex(t => t.id === tab.id); if (i >= 0) tabs[i] = tab; else tabs.push(tab); tabs.sort((a, b) => (a.order ?? 50) - (b.order ?? 50)); },
   tabs: () => tabs.slice(),

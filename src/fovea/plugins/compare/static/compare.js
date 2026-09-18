@@ -158,30 +158,45 @@ async function render(el, { ctx, dataset, fovea }, F, API) {
     top.appendChild(tog('gt', 'GT')); top.appendChild(tog('pred', 'Predictions')); top.appendChild(tog('labels', 'Labels'));
     top.appendChild(h('button', { class: 'btn btn-sm', 'data-tip': 'Copy side-by-side PNG to clipboard (⌘C)', onClick: () => copyPng() }, icon('copy', 13), 'Copy PNG'));
     top.appendChild(h('button', { class: 'btn btn-sm', onClick: () => F.router.navigate(`/d/${ds.id}/annotate?img=${ev.rows[i].id}`) }, icon('pen', 13), 'Edit GT'));
-    let detail = null, imgEl = null;
+    let detail = null, seq = 0;
+    // Same rule as Inspect: keep both panels until the next frame is decoded, then swap everything at once.
+    const frames = F.media.createFrameCache({ max: 4 });
     async function draw() {
       const r = ev.rows[i]; if (!r) return;
-      pos.textContent = `${i + 1} / ${ev.rows.length}`; name.textContent = r.rel_path;
-      if (!detail || detail.id !== r.id) { const res = await F.api.get(`${API}/evals/${ev.id}/image/${r.id}`, { dataset_id: ds.id }); detail = { id: r.id, ...res }; }
-      stageWrap.innerHTML = '';
+      const my = ++seq;
+      pos.textContent = `${i + 1} / ${ev.rows.length}`;
+      let det = detail && detail.id === r.id ? detail : null, im = null, imB = null;
+      try {
+        [det, im] = await Promise.all([
+          det || F.api.get(`${API}/evals/${ev.id}/image/${r.id}`, { dataset_id: ds.id }).then(res => ({ id: r.id, ...res })),
+          frames.get(F.api.imgUrl(r.id)).catch(() => null),
+        ]);
+        if (hasB && im) { imB = im.cloneNode(); try { await imB.decode(); } catch (e) { /* painted on demand */ } }
+      } catch (e) { if (my === seq && rootEl.isConnected) ui.toast(e.message, { type: 'error' }); return; }
+      if (my !== seq || !rootEl.isConnected) return;
+      detail = det;
+      name.textContent = r.rel_path;
+      const panels = [];
       for (const side of hasB ? ['a', 'b'] : ['a']) {
         const d = detail.detail[side]; const s = r[side] || { tp: 0, fp: 0, fn: 0 };
         const panel = h('div', { style: 'display:flex;flex-direction:column;min-height:0' });
         panel.appendChild(h('div', { class: 'row', style: `height:30px;padding:0 10px;font-weight:600;background:${side === 'a' ? '#1e3a8a' : '#7c2d12'};color:#fff;font-size:12px` }, side === 'a' ? 'Model A' : 'Model B', h('span', { class: 'spacer' }), h('span', { class: 'mono xs' }, `TP ${s.tp} · FP ${s.fp} · FN ${s.fn}`)));
         const stage = h('div', { class: 'inspect-stage', style: 'flex:1' });
-        const pic = h('div', { class: 'pic' });
-        const img = h('img', { src: F.api.imgUrl(r.id), alt: '', style: `max-width:calc(${hasB ? '50vw' : '100vw'} - 24px);max-height:calc(100vh - 44px - 30px - 16px)` });
-        pic.appendChild(img);
+        const img = side === 'a' ? im : imB;
+        const pic = h('div', { class: `pic ${img ? 'is-ready' : 'is-error'}` });
+        if (img) { img.alt = ''; img.draggable = false; img.style.cssText = `max-width:calc(${hasB ? '50vw' : '100vw'} - 24px);max-height:calc(100vh - 44px - 30px - 16px)`; pic.appendChild(img); }
         const boxes = [], styles = [];
         if (layers.gt) detail.detail.gt.forEach((g, gi) => { boxes.push(g); styles.push({ color: d && d.gt_matched[gi] === -1 ? '#f59e0b' : '#22c55e', label: `GT ${className(names, g[0])}${d && d.gt_matched[gi] === -1 ? ' · FN' : ''}`, fill: 'transparent' }); });
         if (layers.pred && d) d.preds.forEach(p => { boxes.push(p.box); styles.push({ color: p.tp ? '#3b82f6' : '#ef4444', dashed: true, label: `${p.tp ? 'TP' : 'FP'} ${className(names, p.box[0])}${p.conf != null ? ' ' + p.conf.toFixed(2) : ''}`, fill: 'transparent' }); });
-        pic.appendChild(F.boxLayer(boxes, { names, labels: layers.labels, stroke: 2, styleFor: (b, k) => styles[k] }));
-        stage.appendChild(pic); panel.appendChild(stage); stageWrap.appendChild(panel);
+        if (img) pic.appendChild(F.boxLayer(boxes, { names, labels: layers.labels, stroke: 2, styleFor: (b, k) => styles[k] }));
+        stage.appendChild(pic); panel.appendChild(stage); panels.push(panel);
         panel._img = img; panel._boxes = boxes; panel._styles = styles; panel._side = side; panel._s = s;
       }
+      stageWrap.replaceChildren(...panels);
+      frames.prefetch([ev.rows[i + 1], ev.rows[i - 1]].map(x => (x ? F.api.imgUrl(x.id) : null)));
     }
     async function copyPng() {
-      const panels = [...stageWrap.children]; const first = panels[0]._img; if (!first.naturalWidth) return;
+      const panels = [...stageWrap.children]; const first = panels[0] && panels[0]._img; if (!first || !first.naturalWidth) return;
       const W = first.naturalWidth, H = first.naturalHeight, barH = Math.round(H * 0.06);
       const c = document.createElement('canvas'); c.width = W * panels.length; c.height = H + barH; const g = c.getContext('2d');
       panels.forEach((p, k) => { const x = k * W; g.fillStyle = p._side === 'a' ? '#1e3a8a' : '#7c2d12'; g.fillRect(x, 0, W, barH); g.fillStyle = '#fff'; g.font = `bold ${Math.round(barH * 0.5)}px Inter, sans-serif`; g.textBaseline = 'middle'; g.fillText(`${p._side === 'a' ? 'Model A' : 'Model B'}   TP ${p._s.tp} · FP ${p._s.fp} · FN ${p._s.fn}`, x + 12, barH / 2);
@@ -192,7 +207,7 @@ async function render(el, { ctx, dataset, fovea }, F, API) {
     }
     const key = (e) => { if (ui.hasModal() || F.isTyping()) return; if (e.key === 'Escape') close(); else if (e.key === 'ArrowRight') { i = Math.min(ev.rows.length - 1, i + 1); draw(); } else if (e.key === 'ArrowLeft') { i = Math.max(0, i - 1); draw(); } else if ((e.metaKey || e.ctrlKey) && e.key === 'c') { e.preventDefault(); copyPng(); } };
     document.addEventListener('keydown', key, true);
-    const close = () => { document.removeEventListener('keydown', key, true); rootEl.remove(); viewer = null; };
+    const close = () => { seq++; frames.clear(); document.removeEventListener('keydown', key, true); rootEl.remove(); viewer = null; };
     viewer = { close }; draw();
   }
 

@@ -1,11 +1,16 @@
 // Image loading helpers shared by every surface that shows dataset pixels.
 //
-// Two problems this solves:
+// Problems this solves:
 //  1. A tile whose image has not painted yet is just a dark rectangle — and because the box overlay
-//     is drawn immediately, it reads as "boxes floating on nothing", i.e. broken. Surfaces get a
-//     skeleton while loading, and the overlay stays hidden until there is an image under it.
+//     is drawn immediately, it reads as "boxes floating on nothing", i.e. broken. The overlay stays
+//     hidden until there is an image under it.
 //  2. A thumbnail that genuinely fails (file deleted, drive unmounted, index built elsewhere) used to
 //     stay silently black forever. Now it says so.
+//  3. Visual comfort (docs/visual-comfort.md). People step through thousands of images, often
+//     consecutive video frames. Every image change must be ONE luminance step: the current picture stays
+//     until the next is decoded, then both swap in the same frame. No fade, no blank stage, no animated
+//     placeholder — for near-identical frames an instant cut changes almost nothing on screen, while a
+//     fade or a blank forces a full dark→bright cycle (and a pupil response) on every keypress.
 
 const SIZES = [128, 256, 512, 1024]; // must match THUMB_SIZES in fovea/config.py
 
@@ -31,13 +36,60 @@ export function trackImage(img, holder) {
   holder.classList.add('is-loading');
   const hasSrc = !!img.currentSrc || !!img.getAttribute('src');
   if (hasSrc && img.complete) {
-    // Already decoded (memory/disk cache) — settle synchronously so there is no skeleton flash.
+    // Already decoded (memory/disk cache) — settle synchronously so there is no placeholder flash.
     settle(img.naturalWidth > 0);
   } else {
-    img.addEventListener('load', () => settle(img.naturalWidth > 0), { once: true });
+    // Reveal only once decoded. "load" can fire before the pixels are ready, and revealing then paints
+    // an empty frame first — a second luminance step instead of one.
+    img.addEventListener('load', () => {
+      const done = () => settle(img.naturalWidth > 0);
+      if (typeof img.decode === 'function') img.decode().then(done, done); else done();
+    }, { once: true });
     img.addEventListener('error', () => settle(false), { once: true });
   }
   return img;
+}
+
+/** Load and decode `url`. Resolves with the <img> once its pixels are ready to paint in one frame.
+    Browsers may postpone decode() while the tab is hidden; after 800 ms the loaded image is used anyway
+    (it then decodes at first paint), so a step can never hang on it. */
+export function decodedImage(url) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.decoding = 'async';
+    im.onload = () => {
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; resolve(im); } };
+      if (typeof im.decode === 'function') { im.decode().then(done, done); setTimeout(done, 800); } else done();
+    };
+    im.onerror = () => reject(new Error('Image could not be loaded'));
+    im.src = url;
+  });
+}
+
+/**
+ * Decoded frames for sequential viewers (Inspect, Annotate, Compare).
+ *
+ * get(url) resolves with an already-decoded <img>, so the viewer keeps the current picture on screen and
+ * replaces it in a single frame. prefetch() warms the neighbours so stepping is instant and never shows a
+ * wait at all. Bounded LRU: one decoded 4K frame is ~33 MB.
+ */
+export function createFrameCache({ max = 5 } = {}) {
+  const frames = new Map();   // url -> Promise<HTMLImageElement>
+  function get(url) {
+    const hit = frames.get(url);
+    if (hit) { frames.delete(url); frames.set(url, hit); return hit; }
+    const p = decodedImage(url);
+    frames.set(url, p);
+    p.catch(() => { if (frames.get(url) === p) frames.delete(url); });   // failures are retried next time
+    while (frames.size > max) frames.delete(frames.keys().next().value);
+    return p;
+  }
+  return {
+    get,
+    prefetch(urls) { for (const u of urls) if (u) get(u).catch(() => {}); },
+    clear() { frames.clear(); },
+  };
 }
 
 

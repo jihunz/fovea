@@ -1,4 +1,6 @@
 // Annotate tab: zoomable canvas labeling with autosave, class palette, AI auto-label, range tools.
+import { createFrameCache } from '../lib/media.js';
+
 export function install(fovea) { fovea.registerTab({ id: 'annotate', label: 'Annotate', icon: 'pen', order: 30, render }); }
 
 const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
@@ -29,7 +31,13 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   const ai = { model: '', conf: 0.25, classes: '', mode: 'fill', map: {}, modelClasses: null, keepUnmapped: false, job: null };
   let rangeStart = null;
   let classBuf = '', classBufTimer = null, classBufSel = -1;
-  let autoTimer = null;
+  let autoTimer = null, autoOn = false;
+  // Decoded neighbours: stepping swaps the canvas in one frame, and usually without any wait at all.
+  const frames = createFrameCache({ max: 5 });
+  // Indicators for waits appear only when the wait is long enough to notice; a label that flashes for
+  // a few milliseconds on every step is a change at the edge of vision with no information in it.
+  const NOTICE_MS = 400;
+  let loadingNote = null, savingNote = null;
 
   // ---------------------------------------------------------------- DOM
   const root = h('div', { class: 'ann' });
@@ -95,7 +103,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   const nameEl = h('span', { class: 'name grow' });
   const zoomEl = h('span', { class: 'xs mono faint', style: 'width:44px;text-align:right' }, '100%');
   const playBtn = h('button', { class: 'btn btn-sm btn-icon', 'data-tip': 'Auto-advance', onClick: () => toggleAuto() }, icon('play', 13));
-  const speed = h('input', { type: 'range', class: 'slider', min: 100, max: 3000, step: 50, value: 600, style: 'width:70px', 'data-tip': 'Auto-advance interval', onInput: () => { if (autoTimer) { stopAuto(); startAuto(); } } });
+  const speed = h('input', { type: 'range', class: 'slider', min: 100, max: 3000, step: 50, value: 600, style: 'width:70px', 'data-tip': 'Auto-advance interval', onInput: () => { if (autoOn) scheduleAuto(); } });
   bottom.appendChild(h('div', { class: 'btn-group' },
     h('button', { class: 'btn btn-sm btn-icon', 'data-tip': 'First', onClick: () => goTo(0) }, icon('chevronsLeft', 14)),
     h('button', { class: 'btn btn-sm btn-icon', 'data-tip': 'Previous (←)', onClick: () => goTo(idx - 1) }, icon('chevronLeft', 14)),
@@ -341,7 +349,8 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     if (saving) return false;
     if (conflictOpen) { lastOutcome = 'conflict'; return false; }
     const target = item, payload = boxes.map(b => [...b]), base = version;
-    saving = true; setSaveState('saving');
+    saving = true;
+    clearTimeout(savingNote); savingNote = setTimeout(() => { if (saving && target === item) setSaveState('saving'); }, NOTICE_MS);
     try {
       const res = await fovea.api.put(labelUrl(target.id), { boxes: payload, base_version: base });
       saveRetries = 0; lastOutcome = 'ok';
@@ -387,7 +396,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
       if (Date.now() - lastFailToast > 8000) { lastFailToast = Date.now(); ui.toast('Save failed: ' + (e.message || 'network error'), { type: 'error' }); }
       if (!giveUp) { clearTimeout(saveTimer); saveTimer = setTimeout(() => save(), Math.min(20000, 1500 * 2 ** saveRetries)); }
       return false;
-    } finally { saving = false; }
+    } finally { saving = false; clearTimeout(savingNote); }
   }
 
   /** The file changed under this editor. Ask — never silently resurrect or erase someone else's boxes. */
@@ -488,13 +497,16 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
       idx = i; item = it; switched = true;
       sel = -1; hover = -1; undo = []; redo = []; dirty = false; saveRetries = 0; version = null;
       fovea.router.replaceQuery({ ...filters, sort: sort !== 'id' ? sort : null, order: order !== 'asc' ? order : null, img: it.id });
-      renderInfo(); setSaveState('saved', 'Loading…');
+      renderInfo();
+      clearTimeout(loadingNote);
+      loadingNote = setTimeout(() => { if (my === navToken && loading) setSaveState('saved', 'Loading…'); }, NOTICE_MS);
       let labelsError = null;
       const [labels, loaded] = await Promise.all([
         fovea.api.get(labelUrl(it.id)).catch((e) => { labelsError = e; return null; }),
         loadImage(it.id),
       ]);
       if (my !== navToken) return;
+      clearTimeout(loadingNote);
       // Swap pixels and boxes together: the new image must never be drawn under the previous image's boxes.
       img = loaded;
       stageMsg.textContent = img ? '' : 'Image file not found on disk — it may have been moved or deleted';
@@ -519,21 +531,17 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
       if (img) prevDims = [img.naturalWidth, img.naturalHeight];
       renderBoxes(); updateHud(); draw();
       cursor.prefetch(idx, 4);
-      const nxt = cursor.items[idx + 1]; if (nxt) { const pre = new Image(); pre.src = fovea.api.imgUrl(nxt.id); }
+      frames.prefetch([idx + 1, idx + 2, idx - 1].map(k => (cursor.items[k] ? fovea.api.imgUrl(cursor.items[k].id) : null)));
     } catch (e) {
       if (my !== navToken) return;
       if (!switched) loading = wasLoading;                // still on the previous image, whose boxes are on screen
       stageMsg.textContent = e.message; stageMsg.classList.remove('hidden');
     }
   }
-  /** Resolves with the decoded image, or null when the file cannot be loaded. */
+  /** Resolves with the decoded image, or null when the file cannot be loaded. Decoded before it is drawn,
+      so the first frame of a 4K image never stalls the canvas. */
   function loadImage(id) {
-    return new Promise((resolve) => {
-      const im = new Image(); im.decoding = 'async';
-      im.onload = () => resolve(im);
-      im.onerror = () => resolve(null);
-      im.src = fovea.api.imgUrl(id);
-    });
+    return frames.get(fovea.api.imgUrl(id)).catch(() => null);
   }
   async function nextUnlabeled() {
     if (!item) return;
@@ -556,10 +564,22 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     try { await fovea.api.put(`/api/datasets/${ds.id}/review`, { image_ids: [item.id], status }); item.review = status ? { status, note: (item.review && item.review.note) || '', updated_at: Date.now() / 1000 } : null; cursor.update({ id: item.id, review: item.review }); renderInfo(); fovea.bus.emit('review:changed', { ids: [item.id], status }); }
     catch (e) { ui.toast(e.message, { type: 'error' }); }
   }
-  function startAuto() { autoTimer = setInterval(() => goTo(idx + 1), Number(speed.value)); playBtn.classList.add('active'); playBtn.innerHTML = ''; playBtn.appendChild(icon('pause', 13)); }
-  function stopAuto() { clearInterval(autoTimer); autoTimer = null; playBtn.classList.remove('active'); playBtn.innerHTML = ''; playBtn.appendChild(icon('play', 13)); }
-  function toggleAuto() { autoTimer ? stopAuto() : startAuto(); }
-  function stopAutoIfEnd(i) { if (autoTimer && cursor.total != null && i >= cursor.total - 1) stopAuto(); }
+  // Auto-advance steps from the frame on screen once it has been shown for the chosen interval: every frame
+  // is seen, and a slow file stretches its own slot rather than being skipped.
+  function scheduleAuto() {
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(async () => {
+      if (!autoOn || destroyed) return;
+      if (cursor.total != null && idx >= cursor.total - 1) { stopAuto(); return; }
+      await goTo(idx + 1);
+      if (autoOn && !destroyed) scheduleAuto();
+    }, Number(speed.value));
+  }
+  function setPlayBtn() { playBtn.classList.toggle('active', autoOn); playBtn.innerHTML = ''; playBtn.appendChild(icon(autoOn ? 'pause' : 'play', 13)); }
+  function startAuto() { autoOn = true; setPlayBtn(); scheduleAuto(); }
+  function stopAuto() { const was = autoOn || autoTimer; autoOn = false; clearTimeout(autoTimer); autoTimer = null; if (was) setPlayBtn(); }
+  function toggleAuto() { autoOn ? stopAuto() : startAuto(); }
+  function stopAutoIfEnd(i) { if (autoOn && cursor.total != null && i >= cursor.total - 1) stopAuto(); }
 
   // ---------------------------------------------------------------- range edit
   async function applyRange() {
@@ -771,7 +791,8 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
 
   return () => {
     destroyed = true; navToken++;                 // any navigation still in flight bails at its next check
-    clearTimeout(saveTimer); clearTimeout(classBufTimer); stopAuto();
+    clearTimeout(saveTimer); clearTimeout(classBufTimer); clearTimeout(loadingNote); clearTimeout(savingNote); stopAuto();
+    frames.clear();
     // Let an in-flight save land first (it updates `version`), then write whatever is still pending.
     const finalSave = () => { if (saving) { setTimeout(finalSave, 30); return; } keepaliveSave('leave'); };
     finalSave();

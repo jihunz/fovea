@@ -1,6 +1,6 @@
 // Explore tab: filterable gallery + Inspect overlay + review actions.
 import { ISSUE_LABELS } from './issues.js';
-import { thumbPx, trackImage, createImageLoader } from '../lib/media.js';
+import { thumbPx, trackImage, createImageLoader, createFrameCache } from '../lib/media.js';
 
 export function install(fovea) { fovea.registerTab({ id: 'explore', label: 'Explore', icon: 'grid', order: 20, render }); }
 
@@ -228,10 +228,10 @@ async function render(el, { ctx, dataset, fovea }) {
       { label: 'Inspect', icon: 'eye', onClick: () => openInspect(index), kbd: '↵' },
       { label: 'Annotate', icon: 'pen', onClick: () => fovea.router.navigate(`/d/${ds.id}/annotate?${qs({ img: it.id })}`), kbd: 'E' },
       { sep: true },
-      { label: 'Approve', icon: 'check', onClick: () => review([it.id], 'approved'), kbd: 'A' },
-      { label: 'Flag', icon: 'flag', onClick: () => review([it.id], 'flagged'), kbd: 'F' },
-      { label: 'Exclude', icon: 'ban', onClick: () => review([it.id], 'excluded'), kbd: 'X' },
-      { label: 'Clear review', icon: 'rotate', onClick: () => review([it.id], null), kbd: 'U' },
+      { label: 'Approve', icon: 'check', onClick: () => review([it.id], 'approved', undefined, { quiet: true }), kbd: 'A' },
+      { label: 'Flag', icon: 'flag', onClick: () => review([it.id], 'flagged', undefined, { quiet: true }), kbd: 'F' },
+      { label: 'Exclude', icon: 'ban', onClick: () => review([it.id], 'excluded', undefined, { quiet: true }), kbd: 'X' },
+      { label: 'Clear review', icon: 'rotate', onClick: () => review([it.id], null, undefined, { quiet: true }), kbd: 'U' },
       { sep: true },
       { label: 'Copy path', icon: 'copy', onClick: async () => { const { item } = await fovea.api.get(`/api/datasets/${ds.id}/images/${it.id}`); ui.copyText(item.abs_path_host); } },
       { label: 'Open original', icon: 'external', onClick: () => window.open(fovea.api.imgUrl(it.id), '_blank') },
@@ -284,7 +284,9 @@ async function render(el, { ctx, dataset, fovea }) {
       ui.copyText(typeof text === 'string' ? text : '', `Copied ${ids.length} path${ids.length > 1 ? 's' : ''}`);
     } catch (e) { ui.toast('Copy failed: ' + e.message, { type: 'error' }); }
   }
-  async function review(ids, status, note) {
+  /** Returns true when stored. `quiet`: the change is already visible where the user is looking (a tile
+      badge, the Inspect panel), so no toast — on a fast review a toast per keypress is a flashing distraction. */
+  async function review(ids, status, note, { quiet = false } = {}) {
     try {
       // Only the Inspect panel passes a note. Bulk and keyboard reviews omit it so the server keeps
       // whatever note an image already has instead of blanking it.
@@ -300,8 +302,9 @@ async function render(el, { ctx, dataset, fovea }) {
       });
       fovea.bus.emit('review:changed', { ids, status });
       if (inspect) inspect.draw();
-      ui.toast(status ? `${REVIEW[status].label}: ${ids.length} image${ids.length > 1 ? 's' : ''}` : `Cleared ${ids.length}`, { timeout: 1200 });
-    } catch (e) { ui.toast(e.message, { type: 'error' }); }
+      if (!quiet) ui.toast(status ? `${REVIEW[status].label}: ${fmt.num(ids.length)} image${ids.length > 1 ? 's' : ''}` : `Cleared ${fmt.num(ids.length)}`, { timeout: 1600 });
+      return true;
+    } catch (e) { ui.toast(e.message, { type: 'error' }); return false; }
   }
 
   // ---------------------------------------------------------------- keyboard (grid)
@@ -351,7 +354,7 @@ async function render(el, { ctx, dataset, fovea }) {
     else if (k === 'o' || k === 'O') toggleOverlay();
     else if (k === 'e' || k === 'E') { const it = cursor.items[focusIdx]; if (it) fovea.router.navigate(`/d/${ds.id}/annotate?${qs({ img: it.id })}`); }
     else if (k === '/') { e.preventDefault(); searchInput.focus(); }
-    else if (k.toLowerCase() in REVIEW_KEYS) { const ids = selected.size ? [...selected] : (cursor.items[focusIdx] ? [cursor.items[focusIdx].id] : []); if (ids.length) review(ids, REVIEW_KEYS[k.toLowerCase()]); }
+    else if (k.toLowerCase() in REVIEW_KEYS) { const bulk = selected.size > 0; const ids = bulk ? [...selected] : (cursor.items[focusIdx] ? [cursor.items[focusIdx].id] : []); if (ids.length) review(ids, REVIEW_KEYS[k.toLowerCase()], undefined, { quiet: !bulk }); }
   };
   document.addEventListener('keydown', onKey);
 
@@ -362,64 +365,97 @@ async function render(el, { ctx, dataset, fovea }) {
     inspect = createInspect(index);
   }
   function createInspect(index) {
-    let idx = index, item = cursor.items[idx], showLabels = true, auto = null, speed = 400, activeBox = -1;
+    const c0 = cursor;
+    const frames = createFrameCache({ max: 6 });
+    let idx = index, item = null, showLabels = true, speed = 400, activeBox = -1;
+    let closed = false, want = index, seq = 0, autoOn = false, autoTimer = null;
     const stage = h('div', { class: 'inspect-stage' });
     const side = h('div', { class: 'inspect-side' });
     const top = h('div', { class: 'inspect-top' });
     const rootEl = h('div', { class: 'inspect' }, top, stage, side);
     const overlayToggle = h('button', { class: cls('btn btn-sm', showOverlay && 'active'), 'data-tip': 'Overlay (O)', onClick: () => toggleOverlay() }, icon('square', 13), 'Boxes');
-    const labelsToggle = h('button', { class: cls('btn btn-sm', showLabels && 'active'), 'data-tip': 'Labels (L)', onClick: () => { showLabels = !showLabels; labelsToggle.classList.toggle('active', showLabels); draw(); } }, icon('tag', 13), 'Labels');
+    const labelsToggle = h('button', { class: cls('btn btn-sm', showLabels && 'active'), 'data-tip': 'Labels (L)', onClick: () => { showLabels = !showLabels; labelsToggle.classList.toggle('active', showLabels); renderOverlay(); } }, icon('tag', 13), 'Labels');
     const autoBtn = h('button', { class: 'btn btn-sm', 'data-tip': 'Auto-play (Space)', onClick: () => toggleAuto() }, icon('play', 13), 'Play');
-    const speedInput = h('input', { type: 'range', class: 'slider', min: 50, max: 2000, step: 10, value: speed, style: 'width:90px', onInput: (e) => { speed = Number(e.target.value); speedLbl.textContent = speed + 'ms'; if (auto) { stopAuto(); startAuto(); } } });
+    const speedInput = h('input', { type: 'range', class: 'slider', min: 50, max: 2000, step: 10, value: speed, style: 'width:90px', onInput: (e) => { speed = Number(e.target.value); speedLbl.textContent = speed + 'ms'; if (autoOn) schedule(); } });
     const speedLbl = h('span', { class: 'xs faint mono' }, speed + 'ms');
     const posEl = h('span', { class: 'mono small' });
     const nameEl = h('span', { class: 'name grow' });
+    // The last review action, as static text in a fixed place: the confirmation a toast used to give,
+    // without something popping up at the edge of vision on every keypress of a fast review.
+    const statusEl = h('span', { class: 'inspect-status', 'aria-live': 'polite' });
     top.appendChild(h('button', { class: 'btn btn-sm btn-icon', 'data-tip': 'Close (Esc)', onClick: () => close() }, icon('x', 14)));
-    top.appendChild(posEl); top.appendChild(nameEl);
+    top.appendChild(posEl); top.appendChild(nameEl); top.appendChild(statusEl);
     top.appendChild(overlayToggle); top.appendChild(labelsToggle); top.appendChild(autoBtn); top.appendChild(speedInput); top.appendChild(speedLbl);
-    top.appendChild(h('button', { class: 'btn btn-sm', onClick: () => fovea.router.navigate(`/d/${ds.id}/annotate?${qs({ img: item.id })}`) }, icon('pen', 13), 'Edit (E)'));
-    stage.appendChild(h('button', { class: 'inspect-nav prev', onClick: () => go(-1) }, icon('chevronLeft')));
-    stage.appendChild(h('button', { class: 'inspect-nav next', onClick: () => go(1) }, icon('chevronRight')));
+    top.appendChild(h('button', { class: 'btn btn-sm', onClick: () => { if (item) fovea.router.navigate(`/d/${ds.id}/annotate?${qs({ img: item.id })}`); } }, icon('pen', 13), 'Edit (E)'));
+    stage.appendChild(h('button', { class: 'inspect-nav prev', 'aria-label': 'Previous image', onClick: () => step(-1) }, icon('chevronLeft')));
+    stage.appendChild(h('button', { class: 'inspect-nav next', 'aria-label': 'Next image', onClick: () => step(1) }, icon('chevronRight')));
     const picHolder = h('div', { class: 'pic' });
-    stage.appendChild(picHolder);
+    const waitEl = h('div', { class: 'inspect-wait' });   // a spinner lives here while a frame loads; CSS shows it only after 400 ms
+    stage.appendChild(picHolder); stage.appendChild(waitEl);
     document.body.appendChild(rootEl);
 
-    const c0 = cursor;
-    let closed = false;
-    async function go(delta) {
-      const n = idx + delta; if (n < 0 || (c0.total != null && n >= c0.total)) { if (auto) stopAuto(); return; }
-      const it = await c0.ensure(n); if (!it || closed) return;
-      idx = n; item = it; activeBox = -1; draw(); c0.prefetch(idx, 3);
-      const nxt = c0.items[idx + 1]; if (nxt) { const im = new Image(); im.src = fovea.api.imgUrl(nxt.id); }
+    const urlOf = (it) => fovea.api.imgUrl(it.id);
+    function prefetchAround(n) {
+      c0.prefetch(n, 3);
+      frames.prefetch([n + 1, n + 2, n - 1].map(k => (c0.items[k] ? urlOf(c0.items[k]) : null)));
+    }
+    /** Show image n. The current picture stays on screen until the next one is decoded; then picture,
+        boxes and panel change together in one frame — no blank stage, placeholder or fade in between.
+        The latest request wins: holding an arrow key skips frames instead of queueing them. */
+    async function show(n) {
+      if (closed) return false;
+      if (c0.total != null) n = Math.min(c0.total - 1, n);
+      n = Math.max(0, n);
+      const my = ++seq; want = n;
+      posEl.textContent = `${fmt.num(n + 1)} / ${fmt.num(c0.total)}`;    // the keypress registers at once
+      waitEl.replaceChildren(ui.spinner());
+      let it = null, im = null;
+      try {
+        it = await c0.ensure(n);
+        if (it && my === seq && !closed) im = await frames.get(urlOf(it)).catch(() => null);
+      } catch (e) { if (my === seq && !closed) ui.toast(e.message, { type: 'error' }); }
+      if (closed || my !== seq) return false;
+      waitEl.replaceChildren();
+      if (!it) { want = idx; posEl.textContent = `${fmt.num(idx + 1)} / ${fmt.num(c0.total)}`; return false; }
+      idx = n; item = it; activeBox = -1;
+      paint(im);
+      prefetchAround(n);
       if (rendered < (c0.total || 0) && idx > rendered - 30) loadMore();   // keep the grid ahead of the viewer
       setFocus(idx);
+      return true;
     }
-    function draw() {
-      if (!item) {
-        // Opened on an index whose page is not loaded yet: show that, then draw once it arrives.
-        posEl.textContent = `${fmt.num(idx + 1)} / ${fmt.num(c0.total)}`;
-        picHolder.innerHTML = ''; picHolder.appendChild(ui.spinner());
-        const want = idx;
-        c0.ensure(want).then((it) => { if (it && !closed && idx === want && !item) { item = it; draw(); } }).catch((e) => { if (!closed) ui.toast(e.message, { type: 'error' }); });
-        return;
-      }
-      posEl.textContent = `${fmt.num(idx + 1)} / ${fmt.num(cursor.total)}`;
+    function step(delta) { stopAuto(); show(want + delta); }
+    function overlayFor(it) {
+      return showOverlay && it.boxes && it.boxes.length
+        ? fovea.boxLayer(it.boxes, { names, labels: showLabels, active: activeBox, onClick: (i) => { activeBox = i; renderOverlay(); } })
+        : null;
+    }
+    function paint(im) {
+      if (im) { im.alt = ''; im.draggable = false; }
+      picHolder.className = `pic ${im ? 'is-ready' : 'is-error'}`;
+      picHolder.replaceChildren(...[im, overlayFor(item)].filter(Boolean));
       nameEl.textContent = item.rel_path;
-      picHolder.innerHTML = '';
-      const img = h('img', { src: fovea.api.imgUrl(item.id), alt: '', draggable: false });
-      picHolder.appendChild(img);
-      trackImage(img, picHolder);
-      if (showOverlay && item.boxes && item.boxes.length) picHolder.appendChild(fovea.boxLayer(item.boxes, { names, labels: showLabels, active: activeBox, onClick: (i) => { activeBox = i; draw(); } }));
+      posEl.textContent = `${fmt.num(idx + 1)} / ${fmt.num(c0.total)}`;
       overlayToggle.classList.toggle('active', showOverlay);
-      // side panel
+      renderSide();
+    }
+    function renderOverlay() {
+      if (!item) return;
+      const old = picHolder.querySelector('.ov'); if (old) old.remove();
+      const ov = overlayFor(item); if (ov) picHolder.appendChild(ov);
+      overlayToggle.classList.toggle('active', showOverlay);
+      side.querySelectorAll('.label-row').forEach((r, i) => r.classList.toggle('active', i === activeBox));
+    }
+    let noteEl;
+    function renderSide() {
       const rv = item.review;
       side.innerHTML = '';
       side.appendChild(h('div', { class: 'sec' }, h('h4', 'Review'),
-        h('div', { class: 'row' }, ['approved', 'flagged', 'excluded'].map(s => h('button', { class: cls('btn btn-sm review-btn grow', s, rv && rv.status === s && 'active'), onClick: () => review([item.id], rv && rv.status === s ? null : s, noteEl.value) }, icon(REVIEW[s].icon, 13), REVIEW[s].label, h('span', { class: 'kbd', style: 'margin-left:auto' }, REVIEW[s].key)))),
+        h('div', { class: 'row' }, ['approved', 'flagged', 'excluded'].map(s => h('button', { class: cls('btn btn-sm review-btn grow', s, rv && rv.status === s && 'active'), onClick: () => reviewShown(item, rv && rv.status === s ? null : s) }, icon(REVIEW[s].icon, 13), REVIEW[s].label, h('span', { class: 'kbd', style: 'margin-left:auto' }, REVIEW[s].key)))),
         noteEl = h('textarea', { class: 'input mt-8', rows: 2, placeholder: 'Note (optional) — saved with the next review action', value: rv ? rv.note : '' }),
         rv ? h('div', { class: 'xs faint mt-8' }, `${REVIEW[rv.status].label} ${fmt.ago(rv.updated_at)}`) : h('div', { class: 'xs faint mt-8' }, 'Unreviewed')));
       side.appendChild(h('div', { class: 'sec' }, h('h4', `Labels`, h('span', { class: 'badge', style: 'margin-left:6px' }, String(item.n_boxes))),
-        item.boxes && item.boxes.length ? item.boxes.map((b, i) => h('div', { class: cls('label-row', i === activeBox && 'active'), onMouseenter: () => { activeBox = i; refreshOverlayOnly(); }, onClick: () => { activeBox = i; refreshOverlayOnly(); } }, h('span', { class: 'swatch', style: `background:${classColor(b[0])}` }), h('span', { class: 'name' }, `${b[0]} · ${className(names, b[0])}`), h('span', { class: 'geo' }, `${(b[3] * 100).toFixed(0)}×${(b[4] * 100).toFixed(0)}%`)))
+        item.boxes && item.boxes.length ? item.boxes.map((b, i) => h('div', { class: cls('label-row', i === activeBox && 'active'), onMouseenter: () => { activeBox = i; renderOverlay(); }, onClick: () => { activeBox = i; renderOverlay(); } }, h('span', { class: 'swatch', style: `background:${classColor(b[0])}` }), h('span', { class: 'name' }, `${b[0]} · ${className(names, b[0])}`), h('span', { class: 'geo' }, `${(b[3] * 100).toFixed(0)}×${(b[4] * 100).toFixed(0)}%`)))
           : h('div', { class: 'small faint' }, item.has_label ? 'Empty label file' : 'No label file'),
         item.issues && item.issues.length ? h('div', { class: 'row wrap gap-4 mt-8' }, item.issues.map(c => ui.chip(ISSUE_LABELS[c] || c, { cls: 'issue-chip', icon: 'alert' }))) : null));
       side.appendChild(h('div', { class: 'sec' }, h('h4', 'Image'), h('div', { class: 'kv' },
@@ -430,32 +466,56 @@ async function render(el, { ctx, dataset, fovea }) {
           h('button', { class: 'btn btn-sm', onClick: () => window.open(fovea.api.imgUrl(item.id), '_blank') }, icon('external', 12), 'Original'))));
       side.appendChild(h('div', { class: 'sec xs faint' }, h('div', '← → navigate · A/F/X review · U clear · O overlay · L labels · E edit · Space play · Esc close')));
     }
-    let noteEl;
-    function refreshOverlayOnly() { const ov = picHolder.querySelector('.ov'); if (ov) ov.remove(); if (showOverlay && item.boxes) picHolder.appendChild(fovea.boxLayer(item.boxes, { names, labels: showLabels, active: activeBox, onClick: (i) => { activeBox = i; refreshOverlayOnly(); } })); side.querySelectorAll('.label-row').forEach((r, i) => r.classList.toggle('active', i === activeBox)); }
-    function startAuto() { auto = setInterval(() => go(1), speed); autoBtn.classList.add('active'); autoBtn.innerHTML = ''; autoBtn.appendChild(icon('pause', 13)); autoBtn.appendChild(document.createTextNode('Stop')); }
-    function stopAuto() { clearInterval(auto); auto = null; autoBtn.classList.remove('active'); autoBtn.innerHTML = ''; autoBtn.appendChild(icon('play', 13)); autoBtn.appendChild(document.createTextNode('Play')); }
-    function toggleAuto() { auto ? stopAuto() : startAuto(); }
+    /** Review the image on screen (never one still loading), and confirm it in place. */
+    function reviewShown(target, status) {
+      if (!target) return;
+      review([target.id], status, noteEl ? noteEl.value : '', { quiet: true }).then((ok) => {
+        if (!ok || closed) return;
+        const name = target.rel_path.split('/').pop();
+        statusEl.textContent = status ? `${REVIEW[status].label} · ${name}` : `Review cleared · ${name}`;
+        statusEl.dataset.status = status || '';
+      });
+    }
+    // Auto-play advances from the frame on screen, after it has been shown for `speed` ms: every frame is
+    // seen, and a slow file stretches its own slot instead of being skipped.
+    function schedule() {
+      clearTimeout(autoTimer);
+      autoTimer = setTimeout(async () => {
+        if (!autoOn || closed) return;
+        if (c0.total != null && idx >= c0.total - 1) { stopAuto(); return; }
+        await show(idx + 1);
+        if (autoOn && !closed) schedule();
+      }, speed);
+    }
+    function setAutoBtn() { autoBtn.classList.toggle('active', autoOn); autoBtn.innerHTML = ''; autoBtn.appendChild(icon(autoOn ? 'pause' : 'play', 13)); autoBtn.appendChild(document.createTextNode(autoOn ? 'Stop' : 'Play')); }
+    function startAuto() { autoOn = true; setAutoBtn(); schedule(); }
+    function stopAuto() { if (!autoOn && !autoTimer) return; autoOn = false; clearTimeout(autoTimer); autoTimer = null; setAutoBtn(); }
+    function toggleAuto() { autoOn ? stopAuto() : startAuto(); }
     const key = (e) => {
       if (ui.hasModal()) return;
       if (isTyping()) { if (e.key === 'Escape') e.target.blur(); return; }
-      if (!item && e.key !== 'Escape') return;    // still loading: nothing to review or edit yet
       const k = e.key;
       // Capture-phase listener: stop here, or the grid's own Escape (clear selection) runs on the same key.
-      if (k === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
-      else if (k === 'ArrowRight' || k === 'ArrowDown') { e.preventDefault(); stopAuto(); go(1); }
-      else if (k === 'ArrowLeft' || k === 'ArrowUp') { e.preventDefault(); stopAuto(); go(-1); }
-      else if (k === 'Home') { e.preventDefault(); go(-idx); }
-      else if (k === 'End') { e.preventDefault(); if (cursor.total) go(cursor.total - 1 - idx); }
+      if (k === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return; }
+      if (!item) return;                            // nothing on screen yet: nothing to review or edit
+      if (k === 'ArrowRight' || k === 'ArrowDown') { e.preventDefault(); step(1); }
+      else if (k === 'ArrowLeft' || k === 'ArrowUp') { e.preventDefault(); step(-1); }
+      else if (k === 'Home') { e.preventDefault(); stopAuto(); show(0); }
+      else if (k === 'End') { e.preventDefault(); stopAuto(); if (c0.total) show(c0.total - 1); }
       else if (k === ' ') { e.preventDefault(); toggleAuto(); }
       else if (k === 'o' || k === 'O') toggleOverlay();
       else if (k === 'l' || k === 'L') labelsToggle.click();
       else if (k === 'e' || k === 'E') fovea.router.navigate(`/d/${ds.id}/annotate?${qs({ img: item.id })}`);
-      else if (k.toLowerCase() in REVIEW_KEYS && !e.metaKey && !e.ctrlKey) { const s = REVIEW_KEYS[k.toLowerCase()]; review([item.id], s, noteEl ? noteEl.value : ''); if (s && s !== 'flagged' && !auto) setTimeout(() => go(1), 120); }
+      else if (k.toLowerCase() in REVIEW_KEYS && !e.metaKey && !e.ctrlKey) {
+        const s = REVIEW_KEYS[k.toLowerCase()], target = item;
+        reviewShown(target, s);
+        if (s && s !== 'flagged' && !autoOn) setTimeout(() => { if (!closed && item === target && want === idx) show(idx + 1); }, 120);
+      }
     };
     document.addEventListener('keydown', key, true);
-    const close = () => { if (closed) return; closed = true; stopAuto(); document.removeEventListener('keydown', key, true); rootEl.remove(); inspect = null; if (cursor === c0) setFocus(idx); };
-    draw(); setFocus(idx); cursor.prefetch(idx, 3);
-    return { close, draw: () => { item = c0.items[idx] || item; draw(); } };
+    const close = () => { if (closed) return; closed = true; stopAuto(); seq++; frames.clear(); document.removeEventListener('keydown', key, true); rootEl.remove(); inspect = null; if (cursor === c0) setFocus(idx); };
+    show(index); setFocus(index);
+    return { close, draw: () => { if (!item) return; item = c0.items[idx] || item; renderOverlay(); renderSide(); } };
   }
 
   // ---------------------------------------------------------------- lifecycle
