@@ -531,7 +531,6 @@ def test_export_labels_are_plain_training_rows(tmp_path):
 
 def _seeded(tmp_path, n=9):
     """Images with deliberately tied sort keys (box counts 0/1/2 repeating) and a few reviews."""
-    from fovea import db
     from fovea.core.scanner import scan_dataset
     from fovea.jobs import Job
 
@@ -572,14 +571,18 @@ def test_position_and_neighbor_agree_with_the_list_order_for_every_sort(tmp_path
         _drop(ds_id)
 
 
-def test_malformed_box_count_filters_are_ignored_not_500(tmp_path):
+def test_malformed_box_count_filters_match_nothing_not_500(tmp_path):
     from fovea.core import imagesq
 
     ds_id, _root = _seeded(tmp_path, n=3)
     try:
-        for bad in ("abc", "2.5", " ", ["1"], {"x": 1}):
-            total, _items = imagesq.list_images(ds_id, {"min_boxes": bad, "max_boxes": bad, "seq": ["x"], "q": ["y"]})
-            assert total == 3
+        for bad in ("abc", "2.5", {"x": 1}, ["1", "2"]):       # fail closed: never "no filter", never a 500
+            total, _items = imagesq.list_images(ds_id, {"min_boxes": bad, "max_boxes": bad})
+            assert total == 0, bad
+        for blank in (" ", None, ""):
+            assert imagesq.list_images(ds_id, {"min_boxes": blank, "max_boxes": blank})[0] == 3
+        assert imagesq.list_images(ds_id, {"min_boxes": ["0"]})[0] == 3                  # a one-item JSON list
+        assert imagesq.list_images(ds_id, {"seq": ["x"], "q": ["y"]})[0] == 0            # read as text, not dropped
         big = ",".join(str(i) for i in range(1, 40000))      # beyond SQLite's bound-variable limit
         imagesq.count_images(ds_id, {"ids": big})
     finally:
@@ -616,8 +619,10 @@ def test_relocation_reattaches_review_marks_to_the_new_paths(tmp_path):
         for rel, st in zip(rels, ("approved", "flagged")):
             db.execute("INSERT INTO reviews(dataset_id, rel_path, status, note, updated_at) VALUES(?,?,?,?,?)", (ds_id, rel, st, "", 1))
         db.execute("INSERT INTO reviews(dataset_id, rel_path, status, note, updated_at) VALUES(?,?,?,?,?)", (ds_id, "gone/zz.jpg", "excluded", "", 1))
-        # re-point at images/train directly: the detected layout changes and so does every rel_path
-        new_root = root / "images" / "train"
+        # re-point at a flat copy of the images: the detected layout changes and so does every rel_path
+        import shutil
+        new_root = tmp_path / "moved"
+        shutil.copytree(root / "images" / "train", new_root)
         lay = layout.detect(str(new_root))
         db.execute("UPDATE datasets SET root=?, layout=? WHERE id=?", (lay.root, db.dumps(lay.to_dict()), ds_id))
         db.execute("DELETE FROM boxes WHERE dataset_id=?", (ds_id,))
@@ -831,7 +836,9 @@ def test_rotated_photos_and_high_bit_depth_images_render_correctly(tmp_path, mon
     _Image.new("RGB", (64, 48)).save(plain)
     mt = plain.stat().st_mtime
     import hashlib
-    assert thumbs._key(str(plain), 256, mt, *thumbs._probe(str(plain), mt)) == hashlib.sha1(f"{plain}|256|{mt:.3f}".encode()).hexdigest()
+    pr = thumbs._probe(str(plain), mt)
+    key = thumbs._key(str(plain), 256, mt, *pr) if isinstance(pr, tuple) else thumbs._key(str(plain), 256, mt, pr)
+    assert key == hashlib.sha1(f"{plain}|256|{mt:.3f}".encode()).hexdigest()
 
 
 def test_thumbnails_revalidate_and_tiffs_are_displayable(tmp_path, monkeypatch):
@@ -891,7 +898,7 @@ def test_symlinked_split_folders_are_indexed_and_browsable_but_foreign_links_are
     os.symlink(secret, root / "notes")
     ds_id = _register(root)
     try:
-        res = scan_dataset(ds_id, Job(id="s", kind="scan"))
+        scan_dataset(ds_id, Job(id="s", kind="scan"))
         rels = sorted(r["rel_path"] for r in db.query("SELECT rel_path FROM images WHERE dataset_id=?", (ds_id,)))
         assert rels == ["train/a.jpg", "train/b.jpg", "val/c.jpg"], rels
         row = db.query_one("SELECT * FROM datasets WHERE id=?", (ds_id,))

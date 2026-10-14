@@ -1,8 +1,23 @@
-fastapi>=0.111
-uvicorn[standard]>=0.30
+# Core — always needed.
+# Web stack: each upper bound is the newest release the test suite has passed on; raise one only after
+# `python -m pytest tests -q` passes on the new release. Tested (ultralytics/torch only in the 0.135.2 run):
+# FastAPI 0.115.6 + Starlette 0.41.3 + uvicorn 0.31.0,
+# FastAPI 0.135.2 + Starlette 1.0.0 + uvicorn 0.52.4, FastAPI 0.143.0 + Starlette 0.46.0 + uvicorn 0.31.0, and
+# FastAPI 0.143.0 + Starlette 1.8.0 + uvicorn 0.54.0.
+fastapi>=0.115.6,<0.144     # older releases accepted body-less cross-site POSTs
+starlette>=0.40,<1.9        # comes with FastAPI, whose recent releases no longer cap it
+uvicorn[standard]>=0.31,<0.55   # 0.31+: FORWARDED_ALLOW_IPS takes CIDR ranges (README: Docker behind a proxy)
 Jinja2>=3.1
-Pillow>=10.3
+Pillow>=10.3                # AVIF / JPEG 2000 are indexed when this Pillow build can decode them
 PyYAML>=6.0
-# Optional — AI auto-label (large; comment out for a lightweight image)
-ultralytics>=8.3
-torch>=2.2
+
+# Optional — AI labeling and data quality. Fovea starts and runs without any of these; the features that
+# need them say so. For a lightweight install / Docker image, leave this block out (Docker: INSTALL_AI=0).
+numpy>=1.26                 # robust 16-bit display stretch, QA hashing, AI pre/post-processing
+anthropic>=1.0              # Claude provider (official SDK; uses your own API key)
+httpx>=0.27                 # Gemini / OpenAI / OpenAI-compatible (Ollama, LM Studio, vLLM) providers
+ultralytics>=8.3            # local YOLO / YOLOE / SAM models
+torch>=2.2                  # Docker installs the CPU wheel; for a GPU, install torch for your CUDA first
+tifffile>=2023.1            # 16-bit colour TIFFs at full precision (Pillow alone keeps only the high byte)
+
+# Optional — HEIC / HEIF photos (iPhone): pip install pillow-heif

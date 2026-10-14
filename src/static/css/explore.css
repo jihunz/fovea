@@ -1,0 +1,290 @@
+/* explore — owned by the explore feature; loaded after fovea.css (rules here override the older ones there). */
+
+/* ---------------------------------------------------------------- toolbar: one row at ≥ 1280 px */
+.explore { position: relative; }
+.explore-toolbar { flex-wrap: nowrap; min-height: 46px; padding: 7px 16px; }
+.explore-toolbar > * { flex: none; }
+/* the search box sits in a fixed slot: in Ask AI mode it widens OVER the controls to its right while in use, so
+   nothing in the toolbar moves (the ✦ toggle on its left never shifts under the pointer) */
+.explore-toolbar .search-slot { position: relative; width: 230px; flex: 0 1 230px; min-width: 130px; height: 30px; }
+.explore-toolbar .search-slot > .input-wrap.search { position: absolute; left: 0; top: 0; width: 100%; z-index: 6; }
+.explore-toolbar .search-slot.open > .input-wrap.search { width: min(460px, calc(100vw - 420px)); min-width: 100%; }
+.explore-toolbar .input-wrap.search .input { padding-right: 28px; }
+.explore-toolbar .input-wrap.search .search-ico { position: absolute; left: 9px; top: 0; bottom: 0; display: inline-flex; align-items: center; pointer-events: none; }
+.explore-toolbar .input-wrap.search .search-ico .ico { position: static; }
+.explore-toolbar .search-slot.ask .input { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong)); }
+.explore-toolbar .search-slot.ask .search-ico .ico { color: var(--accent-text); }
+.explore-toolbar .ask-toggle.active { background: var(--accent-soft); color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.ask-pop { position: absolute; left: 0; top: calc(100% + 6px); width: min(460px, calc(100vw - 420px)); min-width: 100%; z-index: 40; display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-md); color: var(--text); font-size: 12.5px; }
+.ask-pop .row { align-items: center; }
+.ask-pop .elapsed { font-family: var(--mono); font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.ask-pop .ask-ex { display: flex; flex-wrap: wrap; gap: 6px; }
+.ask-pop .ask-ex .chip { height: 24px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.ask-pop .ask-who { color: var(--text-3); }
+.ask-pop .ask-who .btn { height: 22px; font-size: 11.5px; padding: 0 6px; }
+.ask-pop .ask-err { display: flex; align-items: flex-start; gap: 6px; color: var(--danger-text); }
+.ask-pop .ask-err > .ico { flex: none; margin-top: 2px; }
+.ask-pop .kbd, .ai-note .kbd { margin-left: 4px; }
+/* an answer that arrived after the list changed: waits here instead of replacing what is on screen */
+.ask-pop .ask-ready { display: flex; align-items: flex-start; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.ask-pop .ask-ready > .ico { flex: none; margin-top: 2px; color: var(--accent-text); }
+.ask-pop .ask-ready > .grow { min-width: 0; line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow-wrap: anywhere; }
+.ask-pop .ask-ready .btn { flex: none; height: 24px; }
+
+/* the AI search's one-line explanation, in front of the filter chips it produced */
+.explore-chips .ai-note { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; padding: 0 2px 0 8px; height: 26px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); font-size: 12.5px; }
+.explore-chips .ai-note > .ico { color: var(--accent-text); flex: none; }
+.explore-chips .ai-note .ai-expl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60ch; }
+.explore-chips .ai-note .ai-via { white-space: nowrap; }
+.explore-chips .ai-note .ai-warn { color: var(--warn-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32ch; }
+.explore-chips .ai-note .btn { height: 22px; padding: 0 6px; font-size: 12px; }
+
+/* counts next to choices: dimmed while they still describe the previous filters (no animation) */
+.counts-stale .n, .counts-stale .counts-note { opacity: .5; }
+.explore-toolbar .seg button.zero { color: var(--text-3); }
+.explore-toolbar .search-clear { position: absolute; right: 3px; width: 24px; height: 24px; }
+.explore-toolbar .search-clear .ico { position: static; width: 12px; height: 12px; color: var(--text-2); }
+.explore-toolbar .select { width: auto; max-width: 180px; }
+.explore-toolbar .btn .lbl { white-space: nowrap; }
+.explore-toolbar .result-count { display: inline-flex; align-items: center; gap: 2px; }
+.explore-toolbar .spacer { flex: 1 1 auto; min-width: 8px; }
+/* One row from 1101 px up, whatever the sort, split or count says: the long parts give way (ellipsis) before any
+   control is pushed past the edge — the split dropdown, the "· N% reviewed / · N changed" tail of the count and
+   the sort button's label shrink; the image count itself and the icon buttons never do. */
+/* shrink order (weights far apart, so it acts as a priority): the search box and the split dropdown give way first,
+   down to their minimum, then the count's tail; the sort label keeps its full width (a fraction of a pixel less
+   would already show an ellipsis) except in windows narrower than 1181 px */
+.explore-toolbar .search-slot { flex-shrink: 1000; }
+.explore-toolbar > .select { flex: 0 1000 auto; min-width: 96px; text-overflow: ellipsis; }
+.explore-toolbar .result-count { flex: 0 50 auto; min-width: 72px; overflow: hidden; white-space: nowrap; }
+.explore-toolbar .result-count .cnt { flex: none; }
+.explore-toolbar .result-count .progress-txt, .explore-toolbar .result-count .gone-btn { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explore-toolbar .result-count .gone-btn { display: inline-block; line-height: 22px; }
+.explore-toolbar .view-btn { flex: 0 0 auto; min-width: 64px; max-width: 220px; }
+@media (max-width: 1180px) { .explore-toolbar .view-btn { flex-shrink: 1; } }   /* the last to give way, and only when narrow */
+.explore-toolbar .view-btn .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.explore-toolbar .view-btn > .ico { flex: none; }
+/* the grid's status line is drawn over the toolbar's free space (and over the count when it needs the room), out
+   of the flow: no control moves when a message appears or goes */
+.explore-toolbar { position: relative; }
+.explore-toolbar .grid-status { position: absolute; display: flex; align-items: center; justify-content: flex-end; min-width: 0; padding: 0 2px 0 4px;
+  font-size: 12.5px; color: var(--text-2); pointer-events: none; }
+.explore-toolbar .grid-status.hidden { display: none; }
+.explore-toolbar .grid-status .t { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.explore-toolbar .grid-status[data-status="error"] { color: var(--danger-text); }
+.explore-toolbar .grid-status[data-status="ok"] { color: var(--ok-text); }
+.result-count .gone-btn { height: 22px; padding: 0 6px; font-size: 12px; color: var(--accent-text); }
+@media (max-width: 1250px) {
+  .explore-toolbar .search-slot { width: 180px; flex-basis: 180px; }
+  .explore-toolbar .result-count { display: inline-flex; }   /* the count is never hidden: it is the answer to every filter */
+}
+@media (max-width: 1100px) {
+  .explore-toolbar { flex-wrap: wrap; }
+  .explore-toolbar .select { max-width: 150px; }
+}
+
+/* active filters, always visible and removable */
+.explore-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 16px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
+.explore-chips .chip, .explore-empty .chip { height: 24px; background: var(--accent-soft); color: var(--accent-text); max-width: 420px; }
+.explore-chips .chip > :not(.x):not(.ico) { overflow: hidden; text-overflow: ellipsis; }
+.explore-chips .chip .x { cursor: pointer; display: inline-flex; }
+.explore-chips .chip.isolate { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
+.explore-banner { display: flex; align-items: center; gap: 10px; padding: 7px 16px; background: var(--info-soft); color: var(--text); font-size: 12.5px; border-bottom: 1px solid var(--border); flex: none; }
+.explore-banner > .ico { color: var(--info); flex: none; }
+
+/* ---------------------------------------------------------------- virtual grid */
+.explore-body { padding: 0; overflow-anchor: none; }
+.vgrid { position: relative; width: 100%; contain: layout style; }
+.vgrid:focus { outline: none; }
+.vgrid > .tile { position: absolute; left: 0; top: 0; width: var(--tw); height: var(--th); contain: layout style; }
+.vgrid > .tile:focus { outline: none; }
+.vgrid > .tile:focus-visible, .vgrid > .tile.focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.vgrid .tile .frame { height: var(--fh); aspect-ratio: auto; }
+.vgrid .pic-wrap { position: relative; max-width: 100%; max-height: 100%; }
+.vgrid .pic-wrap > .pic { position: relative; width: 100%; height: 100%; }
+.vgrid .pic img { display: block; width: 100%; height: 100%; object-fit: contain; }
+/* a failed tile shows only its reason (fovea.css hides the img, but the rule above out-ranks it by load order) */
+.vgrid .pic.is-error > img { display: none; }
+.vgrid .tile .meta { height: 30px; }
+.vgrid .tile .meta .name { display: flex; flex: 1; min-width: 0; overflow: hidden; }
+.vgrid .tile .meta .name .head { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vgrid .tile .meta .name .tail { flex: none; white-space: pre; }
+.vgrid .tile .meta .dims { flex: none; font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.vgrid .tile.ph { cursor: default; box-shadow: none; }
+.vgrid .tile.ph .frame { background: var(--tile-bg); }
+.vgrid .tile.ph:hover { border-color: var(--border); }
+
+/* boxes: one svg per tile, hidden until the picture under it is decoded */
+.vgrid .tov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.vgrid .pic.is-idle > .tov, .vgrid .pic.is-loading > .tov, .vgrid .pic.is-error > .tov { opacity: 0; }
+.vgrid.no-overlay .tov { display: none; }
+
+/* excluded tiles stay dim, but are still revealed only once decoded (the old rule out-ranked is-loading) */
+.vgrid .tile[data-review="excluded"] .pic:not(.is-ready) > img { opacity: 0; }
+
+/* why a thumbnail is missing (static/lib/media.js classifies the failure) */
+.vgrid .tile .pic.is-error[data-err="checking"]::after { content: '⚠'; }
+.vgrid .tile .pic.is-error[data-err="unsupported"]::after { content: '⚠ cannot decode'; }
+.vgrid .tile .pic.is-error[data-err="decode"]::after { content: '⚠ cannot decode'; }
+.vgrid .tile .pic.is-error[data-err="network"]::after { content: '⚠ not loaded — scroll to retry'; }
+
+/* selection: the check mark exists only on selected tiles */
+.vgrid .tile .sel { display: flex; }
+.vgrid .tile .sel::after { content: ''; width: 9px; height: 5px; border-left: 2px solid #fff; border-bottom: 2px solid #fff; transform: translateY(-1px) rotate(-45deg); opacity: 0; }
+.vgrid .tile.selected .sel::after { opacity: 1; }
+.vgrid .tile .sel { bottom: 36px; }
+
+/* reviewed or edited out of the current filter: kept in place, dimmed, until a refresh */
+.vgrid .tile.gone { opacity: .5; }
+.vgrid .tile.gone .frame::after { content: 'No longer matches'; position: absolute; left: 6px; bottom: 6px; padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.72); color: #fff; font-size: 10.5px; font-weight: 600; }
+
+.vgrid .tile .badges { max-width: calc(100% - 40px); flex-wrap: nowrap; overflow: hidden; }
+.vgrid .tile .badges .badge.split { display: inline-block; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 18px; }
+/* opaque: a translucent blue over a bright frame lightened to 4.3:1 behind the white 10.5 px text (now 6.7:1) */
+.vgrid .tile .badges .badge.ai { background: #1d4ed8; color: #fff; }
+.vgrid .tile .badges .badge.suspect { background: #f59e0b; color: #1c1917; backdrop-filter: none; }
+.vgrid .tile .issue-dot { cursor: help; }
+
+.explore-empty { display: flex; justify-content: center; padding: 56px 16px; }
+.explore-empty .chip { cursor: default; }
+.explore-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.ql-wait { position: absolute; right: 8px; top: 8px; }
+
+/* rubber-band selection: a static rectangle while dragging from the space between tiles */
+.vgrid > .band { position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 2px; }
+.vgrid.banding, .vgrid.banding * { cursor: crosshair; user-select: none; }
+
+/* ---------------------------------------------------------------- bulk bar: floats over the grid */
+.explore > .bulk-bar { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); margin: 0; max-width: calc(100% - 32px); flex-wrap: wrap; justify-content: center; row-gap: 6px; }
+.bulk-bar .sep { width: 1px; height: 18px; background: currentColor; opacity: .25; }
+.bulk-bar .btn-link { background: transparent; border: 0; color: inherit; text-decoration: underline; text-underline-offset: 3px; padding: 0 4px; box-shadow: none; }
+.bulk-bar .btn-link:hover { background: transparent; }
+
+/* ---------------------------------------------------------------- popovers */
+.filter-pop { max-height: min(78vh, 680px); overflow-y: auto; overscroll-behavior: contain; }
+.cls-pop .cls-list { max-height: min(52vh, 460px); overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+.cls-row { display: flex; align-items: center; gap: 7px; padding: 4px; border-radius: 4px; font-size: 12.5px; min-width: 0; }
+.cls-row:hover { background: var(--surface-2); }
+.cls-row .n { font-family: var(--mono); font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.cls-row.zero { color: var(--text-3); }
+.fp-row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.fp-row .select, .fp-row .seg { width: 100%; }
+.fp-row .seg button { flex: 1; justify-content: center; }
+.fp-row .input-sm { width: 76px; }
+.fp-row.sw { grid-template-columns: minmax(0, 1fr) auto; cursor: pointer; padding: 2px 0; }
+.issue-list { display: flex; flex-direction: column; }
+.cls-pop .only-total { color: var(--text-2); min-height: 16px; }
+.issue-list .grp { margin: 8px 4px 2px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+
+/* ---------------------------------------------------------------- Inspect: fit, zoom, pan */
+/* Inspect is dark in either theme. Its themed children (faint text, badges, chips, kbd, inputs, focus rings) read
+   the dark theme's tokens here, so the light theme cannot put #6a6b6f text or a white badge on the dark panel. */
+.inspect.ex-inspect {
+  --surface: #17181b; --surface-2: #1e1f23; --surface-3: #26272c; --border: #26272c; --border-strong: #35363c;
+  --text: #ececec; --text-2: #a4a5aa; --text-3: #9a9ba0;
+  --accent: #2dd4bf; --accent-hover: #5eead4; --accent-soft: rgba(45,212,191,.13); --accent-text: #5eead4; --accent-ring: rgba(45,212,191,.32); --on-accent: #06231f;
+  --ok-text: #4ade80; --warn-text: #fbbf24; --danger-text: #f87171; --info-text: #93c5fd;
+  color-scheme: dark;
+}
+.inspect-side .faint { color: #a9aaaf; }
+.inspect-side .sec h4 .badge { background: rgba(255,255,255,.1); color: #cfcfcf; }
+.inspect:focus { outline: none; }
+.inspect-stage { cursor: default; }
+.inspect-stage.zoomed { cursor: grab; }
+.inspect-stage.panning { cursor: grabbing; }
+.inspect-stage > .pic { position: absolute; max-width: none; max-height: none; }
+.inspect-stage > .pic.is-ready > img { display: block; width: 100%; height: 100%; max-width: none; max-height: none; }
+.inspect-stage > .pic.pixelated > img { image-rendering: pixelated; }
+.inspect-stage > .pic.is-error { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.inspect-nav { z-index: 2; }
+.inspect-top { overflow: hidden; }
+.inspect-top .pos { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.inspect-top .zoom-btn { min-width: 58px; font-variant-numeric: tabular-nums; }
+.inspect-top .speed-lbl { color: #a9aaaf; min-width: 54px; font-variant-numeric: tabular-nums; }
+.inspect-top .speed-lbl.limited { color: #fcd34d; }
+.inspect-top > * { flex: none; }
+.inspect-top > .name { flex: 1 1 auto; }
+
+.inspect-side .review-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.inspect-side .review-row .btn { min-width: 0; padding: 0 6px; }
+.inspect-side .note-state { margin-top: 6px; color: #a9aaaf; }
+.inspect-side .label-list { max-height: 260px; overflow-y: auto; }
+.inspect-side .label-row { cursor: pointer; }
+.inspect-side .label-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.inspect-side .label-row.dim { opacity: .45; }
+.inspect-side .label-row .idx { flex: none; min-width: 22px; font: 10.5px/1 var(--mono); color: #a9aaaf; font-variant-numeric: tabular-nums; }
+.inspect-side .prop-row.has-ref { cursor: pointer; }
+.inspect-side .prop-row.has-ref:hover { background: rgba(255,255,255,.06); }
+.inspect-side .box-issue { font-size: 10.5px; color: #fcd34d; white-space: nowrap; }
+.inspect-side .props .swatch.dashed { background: transparent; border: 1.5px dashed; width: 11px; height: 11px; }
+/* the same threshold control as Annotate's Proposals panel: slider, value, { } */
+.inspect-side .props .thr { display: grid; grid-template-columns: auto minmax(0, 1fr) 32px auto auto; align-items: center; gap: 6px; margin: 2px 0 6px; color: #cfcfcf; }
+.inspect-side .props .thr .slider { width: 100%; min-width: 0; }
+.inspect-side .props .thr .faint { color: #a9aaaf; }
+.inspect-side .props .thr .kbd { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.18); color: #cfcfcf; }
+.inspect-side .props .prop-stats { color: #a9aaaf; margin: -2px 0 4px; }
+.inspect-side .props h4 .badge { background: rgba(255,255,255,.1); color: #cfcfcf; }
+
+/* a path wraps after a slash, never inside a file name (fovea.css breaks .kv .mono anywhere) */
+.inspect-side .kv .mono.path, .inspect-side .linkish.path { word-break: normal; overflow-wrap: anywhere; }
+
+/* QA flags: a chip shows which box (highlighted row, dashed expected box) and the frames to compare */
+.inspect-side button.chip { font-family: inherit; cursor: pointer; }
+.inspect-side .issue-chip.clickable:hover { border-color: rgba(245,158,11,.6); }
+.inspect-side .issue-chip.active { background: rgba(245,158,11,.3); border-color: #f59e0b; }
+.inspect-side .issue-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.inspect-side .label-row.flagged { box-shadow: inset 2px 0 0 #f59e0b; background: rgba(245,158,11,.1); }
+.inspect-side .flag-detail { margin-top: 8px; color: #cfcfcf; line-height: 1.5; }
+/* dup_label_mismatch: the key to the twin's dashed boxes and the highlighted rows */
+.inspect-side .twin-legend { display: grid; gap: 2px; margin-top: 6px; }
+.inspect-side .twin-legend .lg { display: flex; align-items: baseline; gap: 7px; }
+.inspect-side .twin-legend .lg-sw { flex: none; width: 13px; height: 9px; box-sizing: border-box; }
+.inspect-side .twin-legend .lg-sw.ghost { border: 1.5px dashed #f59e0b; }
+.inspect-side .twin-legend .lg-sw.row { box-shadow: inset 2px 0 0 #f59e0b; background: rgba(245,158,11,.25); }
+.inspect-side .twin-legend .kbd { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.18); color: #cfcfcf; }
+.inspect-side .props .btn:disabled { opacity: .45; }
+.inspect-side .sec h4 .spacer { flex: 1; }
+.inspect-side .sec h4 { display: flex; align-items: center; }
+.inspect-side .linkish { background: none; border: 0; padding: 0; color: #93c5fd; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; text-align: left; font-family: var(--mono); font-size: 12px; word-break: break-all; min-width: 0; }
+.inspect-side .hints { color: #a9aaaf; line-height: 1.6; }
+.inspect-side .sec-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 0; border: 0; background: none; color: #8a8b90; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; cursor: pointer; }
+.inspect-side .sec-toggle:hover { color: #cfcfcf; }
+.inspect-side .sim-body { margin-top: 8px; }
+.inspect-side .sim-body .xs { color: #a9aaaf; }
+.sim-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.sim { position: relative; padding: 0; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; overflow: hidden; background: #101114; aspect-ratio: 4 / 3; cursor: pointer; }
+.sim:hover, .sim:focus-visible { border-color: var(--accent); outline: none; }
+.sim .pic { width: 100%; height: 100%; }
+.sim img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.sim .d, .sim .sp { position: absolute; font: 600 10px/1.3 var(--mono); padding: 1px 4px; border-radius: 3px; }
+.sim .d { left: 3px; bottom: 3px; background: rgba(0,0,0,.75); color: #fff; }
+.sim .sp { right: 3px; top: 3px; background: #f59e0b; color: #1c1917; max-width: calc(100% - 6px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* narrow windows: the side panel becomes a bottom sheet instead of disappearing */
+@media (max-width: 900px) {
+  .inspect { grid-template-columns: 1fr; grid-template-rows: 44px minmax(0, 1fr) minmax(0, 40vh); }
+  .inspect-side { display: flex; border-left: 0; border-top: 1px solid rgba(255,255,255,.08); }
+  .inspect-top .slider, .inspect-top .speed-lbl, .inspect-top .inspect-status { display: none; }
+}
+
+/* ---------------------------------------------------------------- quick look (hold Space) */
+.quicklook { position: fixed; inset: 0; z-index: 95; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: color-mix(in srgb, var(--stage) 94%, transparent); pointer-events: none; }
+.quicklook .pic { position: relative; }
+.quicklook img { display: block; width: 100%; height: 100%; }
+.quicklook .ql-name { color: #e8e8e8; font-size: 12px; }
+.quicklook .ql-name .faint { color: #a9aaaf; }
+
+/* ---------------------------------------------------------------- view popover extras */
+.saved-views .sv-row { gap: 2px; }
+.saved-views .sv-name { justify-content: flex-start; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.saved-views .sv-row.current .sv-name { color: var(--accent-text); font-weight: 600; }
+.result-count .progress-txt { color: var(--text-3); }
+.inspect-status { max-width: 44ch; }
+.inspect-status[data-status="ok"] { color: #86efac; }
+.inspect-status[data-status="error"] { color: #fca5a5; }
+.inspect-status .elapsed { color: #a9aaaf; }
+.inspect-status[data-status="warn"] { color: #fcd34d; }
+/* What ⇧Enter leaves (proposals over a box of another class) or cannot apply (a fix whose box is gone): stated plainly. */
+.inspect-side .prop-left { color: #fcd34d; }

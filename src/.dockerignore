@@ -1,0 +1,16 @@
+# Never bake the index (it can hold settings and keys), the thumbnail cache, model weights or local env
+# files into image layers: data/ and model/ are mounted at run time (docker-compose.yml).
+data/
+model/
+.env
+.env.*
+!.env.example
+tests/.tmp-data/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+.DS_Store
+.git

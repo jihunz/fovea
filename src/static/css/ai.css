@@ -1,0 +1,368 @@
+/* ai — owned by the ai feature; loaded after fovea.css.
+   AI panel in Annotate (.aip-*), shared batch form / job box / previews (.aib-*, .aij-*, .aiov-*), AI tab (.ai-*).
+   Visual comfort: nothing animates except the shared delayed spinner; states are static colour + text. Status text
+   uses the shell's own text tokens (--warn-text, --ok-text, --danger-text: >= 4.5:1 on --surface, --surface-2 and
+   their -soft fills in both themes), so AI screens read like the rest of the app. */
+:root {
+  --ai-warn-text: var(--warn-text); --ai-bad-text: var(--danger-text); --ai-ok-text: var(--ok-text);
+  --ai-chip-bg: rgba(10, 11, 13, .78);
+}
+
+/* ------------------------------------------------------------------ shared bits */
+.aip-bad { color: var(--ai-bad-text); }
+.aip-warn, .aip-hint.warn { color: var(--ai-warn-text); }
+.aip-link { border: 0; background: none; padding: 0; font: inherit; color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.aip-link:hover { text-decoration-thickness: 2px; }
+/* Segmented controls: layout only — the selected segment is styled by the shared .seg rules, like every other one. */
+.ai-seg { flex-wrap: wrap; max-width: 100%; }
+.ai-seg button { white-space: nowrap; }
+.aip-menu { max-height: min(70vh, 560px); overflow-y: auto; max-width: min(380px, 92vw); }
+.aip-menu .menu-item { align-items: flex-start; }
+.aip-menu .menu-item > .ico { margin-top: 2px; }
+.aip-menu .menu-item[disabled] { opacity: 1; cursor: default; }
+.aip-menu .menu-item[disabled] .aip-opt .n { color: var(--text-2); }
+.aip-opt { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.aip-opt .n { font-weight: 500; }
+.aip-opt .s { font-size: 11px; color: var(--text-3); white-space: normal; }
+.aip-pick { width: 100%; min-width: 0; height: auto; min-height: 34px; padding: 4px 8px; justify-content: flex-start; text-align: left; gap: 8px; }
+.aip-pick > .ico:last-child { margin-left: auto; color: var(--text-3); }
+.aip-pick-t { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; line-height: 1.25; }
+.aip-pick-t .n { font-weight: 600; font-size: 12.5px; }
+.aip-pick-t .s { font-size: 11px; color: var(--text-3); font-weight: 400; }
+
+/* ------------------------------------------------------------------ Annotate panel (fits a ~220 px rail) */
+.aip { display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: 12px; }
+.aip-top { display: flex; gap: 4px; align-items: stretch; }
+.aip-top .aip-pick { flex: 1 1 auto; }
+.aip-top > .btn-icon { height: auto; }
+.aip-note { font-size: 11.5px; color: var(--text-3); line-height: 1.4; }
+.aip-cloud::before { content: '↗ '; }
+.aip-effort { display: flex; flex-direction: column; gap: 6px; }
+.aip-effort:empty { display: none; }
+.aip-seg { display: flex; width: 100%; }
+.aip-seg button { flex: 1 1 0; justify-content: center; padding: 0 6px; }
+.aip-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.aip-row .aip-seg { flex: 1 1 auto; width: auto; }
+.aip-lbl { font-size: 11px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
+.aip-thr { display: grid; grid-template-columns: auto 1fr 32px; gap: 8px; align-items: center; }
+.aip-thr-v { font-family: var(--mono); font-size: 11.5px; text-align: right; color: var(--text-2); }
+.aip-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.4; }
+.aip-classes { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.aip-classes:empty { display: none; }
+.aip-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.aip-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 22px; padding: 0 8px 0 6px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: transparent; color: var(--text-2); font-size: 11.5px; cursor: default; }
+button.aip-chip { cursor: pointer; }
+button.aip-chip:hover { border-color: var(--text-3); color: var(--text); }
+.aip-chip > i { width: 8px; height: 8px; border-radius: 2px; flex: none; opacity: .45; }
+.aip-chip.on { background: var(--surface-2); color: var(--text); border-color: var(--text-3); }
+.aip-chip.on > i { opacity: 1; }
+/* Toggle chips: selected = accent outline + soft accent fill + a check mark, off = plain outline, unavailable (below)
+   = no outline and faint text. Dashed outlines mean "AI proposal" everywhere (visual-comfort rule 10), so a class
+   with only a placeholder name and no prompt is marked by an italic name instead. */
+button.aip-chip[aria-pressed="true"], button.aip-chip[aria-pressed="true"]:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.aip-chip > .ico { flex: none; margin: 0 -1px 0 -2px; color: var(--accent-text); }
+.aip-chip.undescribed > .truncate { font-style: italic; }
+.aip-chip .truncate { min-width: 0; }
+.aip-x { border: 0; background: none; padding: 0; margin-left: 2px; color: var(--text-3); display: inline-flex; cursor: pointer; }
+.aip-x:hover { color: var(--text); }
+.aip-map { display: flex; flex-direction: column; gap: 4px; }
+.aip-map-row { display: grid; grid-template-columns: minmax(36px, .7fr) 12px minmax(92px, 1.3fr) 22px; gap: 4px; align-items: center; }
+.aip-map-row .ico { color: var(--text-3); }
+.aip-map-row .select { min-width: 0; width: 100%; }
+.aip-auto { font-size: 10px; color: var(--text-3); text-align: center; }
+.aip-classes > .select { width: 100%; }
+.aip-actions { display: flex; gap: 6px; }
+.aip-go { flex: 1 1 0; min-width: 0; gap: 5px; padding: 0 7px; }
+.aip-go .kbd { height: 16px; min-width: 16px; padding: 0 3px; font-size: 10px; background: transparent; color: inherit; border-color: currentColor; }
+/* The rail is 248 px wide above 1100 px windows and 220 / 200 px below: there Propose cannot hold icon + label + key
+   badge, so the badge goes (the idle hint under the buttons names the key) rather than clip the icon and the badge. */
+.aip-actions { container-type: inline-size; }
+@container (max-width: 210px) { .aip-go .kbd { display: none; } }
+/* key badges inside status text sit within the 16 px line, so the fixed-height status slot keeps its 3 lines */
+.aip-msg .kbd { height: 14px; min-width: 14px; padding: 0 3px; font-size: 10px; border-bottom-width: 1px; vertical-align: 1px; line-height: 1; }
+.aip-jobs:empty { display: none; }
+/* N3: the status slot under Propose / Batch keeps one height (3 lines) whether idle, busy, done or failed, so the
+   threshold and everything below never move; longer texts are clamped (full text in the title). */
+.aip-status { display: flex; flex-direction: column; gap: 2px; height: 52px; overflow: hidden; flex: none; }
+.aip-status .aip-msg { line-height: 16px; flex: none; }
+.aip-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.aip-msg.warn .aip-clamp { -webkit-line-clamp: 1; }
+.aip-msg.wait .aip-clamp { -webkit-line-clamp: 2; }       /* busy line + a two-line provider wait fill the slot */
+.aip-msg.idle { color: var(--text-3); }
+.aip-msg.idle .aip-clamp { -webkit-line-clamp: 3; }
+.aip-msg.bad .aip-clamp:only-of-type { -webkit-line-clamp: 3; }
+.aip-msg.busy .elapsed { margin-left: auto; }
+/* Propose runs per image: a request still running for ANOTHER image keeps one named line ("Proposing for <name>…")
+   in the slot, first or under this image's own busy line; what shares the slot with it gives way so the 3 lines fit
+   (full texts in the titles). A provider wait on this image matters more than the other image's line. */
+.aip-msg.busy.other { color: var(--text-3); }
+.aip-status > .other ~ .aip-msg .aip-clamp { -webkit-line-clamp: 2; }
+.aip-status:has(> .wait:not(.hidden)) > .here ~ .aip-msg:not(.wait):not(.other) .aip-clamp { -webkit-line-clamp: 1; }
+.aip-status > .here ~ .aip-msg:not(.wait):not(.other) ~ .wait .aip-clamp { -webkit-line-clamp: 1; }
+.aip-other-t { display: flex; min-width: 0; overflow: hidden; white-space: nowrap; }
+.aip-other-l { flex: none; }
+.aip-other-t > .mid > .t { flex: none; }        /* the frame number stays whole */
+.aip-status > .other:has(~ .wait:not(.hidden)) { display: none; }
+.aip-top .aip-pick { height: 40px; min-height: 40px; }
+.aip-thr { flex: none; height: 24px; }
+.aip-noconf { color: var(--text-3); }
+.aip-opt.off .n { color: var(--text-2); font-weight: 500; }
+.aip-opt.off .s { color: var(--text-3); }
+.aip-msg { display: flex; align-items: flex-start; gap: 6px; font-size: 11.5px; line-height: 1.4; color: var(--text-2); min-width: 0; }
+.aip-msg > .ico { flex: none; margin-top: 1px; }
+.aip-msg > span { min-width: 0; overflow-wrap: break-word; }
+.aip-msg .spinner { width: 12px; height: 12px; margin-top: 1px; }
+.aip-msg .elapsed { font-family: var(--mono); font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; }
+.aip-msg > .aip-link { flex: none; }
+.aip-msg.ok > .ico { color: var(--ai-ok-text); }
+.aip-msg.ok strong { color: var(--text); }
+.aip-msg.bad { color: var(--ai-bad-text); }
+.aip-msg.warn { color: var(--ai-warn-text); }
+.aip-jobs { display: flex; flex-direction: column; gap: 6px; }
+
+/* ------------------------------------------------------------------ job box */
+.aij { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2); min-width: 0; font-size: 12px; }
+.aij-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.aij-head > .ico { color: var(--accent-text); flex: none; }
+.aij-head .elapsed { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.aij-head .btn { height: 22px; padding: 0 6px; }
+.aij-row { color: var(--text-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.aij-msg { font-size: 11.5px; color: var(--text-3); }
+.aij-msg:empty { display: none; }
+.aij-end { display: flex; gap: 8px; align-items: flex-start; min-width: 0; color: var(--text-2); }
+.aij-end > .ico { flex: none; margin-top: 2px; }
+.aij-end.ok > .ico { color: var(--ai-ok-text); } .aij-end.warn > .ico { color: var(--ai-warn-text); } .aij-end.danger > .ico { color: var(--ai-bad-text); }
+.aij-end .strong { color: var(--text); }
+.aip .aij { padding: 8px 10px; }
+.aip .aij .btn { flex: 1 1 auto; }
+
+/* ------------------------------------------------------------------ batch form */
+.aib-modal { width: min(760px, 94vw); }
+.aib-form .field > .label { margin-bottom: 0; }
+.aib-form .aip-pick { max-width: 420px; }
+.aib-form .row { flex-wrap: wrap; }
+.aib-scopes { display: flex; flex-direction: column; gap: 6px; }
+.aib-scope { align-items: center; flex-wrap: wrap; }
+/* A scope whose label carries a text box ("These image ids"): the radio lines up with the label's first line. */
+.aib-scope:has(textarea) { align-items: flex-start; }
+.aib-scope:has(textarea) > input[type=radio] { margin-top: 3px; }
+.aib-scope .input { height: 26px; }
+.aib-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.aib-opts:has(> .hidden:first-child + .hidden) { display: none; }
+/* Room for the price line plus two notes, so the estimate arriving (or a cap note appearing) does not push the
+   Start button down under the pointer. */
+.aib-est { padding: 8px 10px; border-radius: var(--r); background: var(--surface-2); min-height: 70px; display: flex; flex-direction: column; justify-content: flex-start; gap: 3px; }
+.aib-est:empty { display: none; }
+.aib-err { color: var(--ai-bad-text); font-size: 12.5px; }
+.aib-err:empty { display: none; }
+.aib-prev:empty { display: none; }
+.aib-prev-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.aib-prev-item { margin: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.aib-prev-item figcaption { color: var(--text-2); min-width: 0; }
+/* An image path in a narrow caption (pathLine): the file name's shared head gives way first, then the split chip;
+   the name's end (frame number) stays, and the line clips instead of painting over the time / cost / link beside it. */
+.ai-pathline { display: flex; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap; }
+.ai-pathline-s { flex: 0 1 auto; min-width: 3ch; margin-right: 5px; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; border: 1px solid var(--border); border-radius: 4px; line-height: 15px; }
+.ai-pathline-h { flex: 0 100000 auto; min-width: 1ch; overflow: hidden; text-overflow: ellipsis; }
+.ai-pathline-t { flex: none; }
+.aib-foot { justify-content: flex-end; margin-top: 12px; }
+/* The estimate's first line in the batch dialog's footer, left of Cancel / Start: the form above scrolls in a short
+   window, and the price must be in view whenever Start is. Basis 0 keeps it on the buttons' line (it truncates). */
+.aib-sum { flex: 1 1 0; min-width: 0; font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aib-sum.muted { color: var(--text-3); }
+.aib-sum.bad { color: var(--ai-bad-text); }
+.aib-sum.warn { color: var(--ai-warn-text); }
+
+/* ------------------------------------------------------------------ prediction overlays (thumbnails) */
+.aiov-pic { position: relative; width: 100%; background: var(--stage); border-radius: 6px; overflow: hidden; }
+.aiov-pic > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; display: block; }
+.aiov { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.aiov-gt, .aiov-pr { position: absolute; box-sizing: border-box; }
+.aiov-gt { border: 1px solid; opacity: .75; }
+.aiov-pr { border: 2px dashed; }
+.aiov-chip { position: absolute; left: -2px; top: -2px; transform: translateY(-100%); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: var(--ai-chip-bg); color: #fff; border: 1px solid; border-bottom: 0; border-radius: 3px 3px 0 0; font: 600 10px/1.35 var(--font); padding: 0 4px; }
+
+/* ------------------------------------------------------------------ AI tab */
+.ai-page { max-width: 1680px; }
+.ai-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
+.ai-head .page-sub { max-width: 760px; }
+.ai-head-note { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-nav { display: flex; gap: 2px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.ai-nav-btn { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; padding: 8px 12px; margin-bottom: -1px; border-bottom: 2px solid transparent;
+  color: var(--text-2); font-size: 13px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.ai-nav-btn:hover { color: var(--text); }
+.ai-nav-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+.ai-nav-btn .ico { width: 14px; height: 14px; }
+.ai-nav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
+.ai-body { min-width: 0; }
+.ai-cols { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.ai-cols-wide { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); }
+@media (max-width: 1100px) { .ai-cols, .ai-cols-wide { grid-template-columns: minmax(0, 1fr); } }
+.ai-card { min-width: 0; }
+.ai-card .card-header .sub { margin-left: auto; text-align: right; }
+.ai-big { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.ai-privacy { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-2); padding: 10px 12px; border-radius: var(--r); background: var(--surface-2); margin-top: 12px; }
+.ai-privacy .ico { flex: none; margin-top: 2px; color: var(--text-3); }
+.ai-privacy.ai-privacy-remote { background: var(--warn-soft); color: var(--text); }
+.ai-privacy.ai-privacy-remote .ico { color: var(--warn-text); }
+.ai-page .chip.warn, .aib .chip.warn { color: var(--ai-warn-text); }
+.ai-page .chip.ok { color: var(--ai-ok-text); }
+.ai-page .chip.danger { color: var(--ai-bad-text); }
+
+/* overview */
+.ai-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ai-step { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.ai-step:first-child { padding-top: 0; }
+.ai-step:last-child { border-bottom: 0; padding-bottom: 0; }
+.ai-step-n { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border-strong); display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11.5px; font-weight: 600; color: var(--text-2); margin-top: 1px; }
+.ai-step.done .ai-step-n { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+.ai-provs { display: flex; flex-direction: column; }
+.ai-prov { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--border); min-width: 0; }
+.ai-prov:last-child { border-bottom: 0; }
+.ai-prov .dot { margin-top: 6px; background: var(--border-strong); flex: none; }
+.ai-prov .dot.ready { background: var(--ok); }
+
+/* label */
+.ai-bulk { display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }
+.ai-bulk .row { flex-wrap: wrap; }
+
+/* two-stage */
+.ai-tsc-list { display: flex; flex-direction: column; gap: 4px; max-height: 420px; overflow-y: auto; padding-right: 4px; }
+.ai-tsc { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(0, 1.4fr) 70px; gap: 8px; align-items: center; }
+.ai-tsc .check { min-width: 0; }
+.ai-tsc .check > span { min-width: 0; }
+.ai-tsc.off .input { opacity: .6; }
+.ai-sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.ai-sw.lg { width: 14px; height: 14px; }
+.ai-ts-sum { display: flex; flex-direction: column; gap: 2px; }
+.ai-ts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.ai-ts-item { margin: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ai-tsr-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ai-tsr { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }
+.ai-tsr .ai-sw { margin-top: 3px; }
+.ai-ok { color: var(--ai-ok-text); }
+.ai-diff { color: var(--ai-warn-text); font-weight: 500; }
+
+/* audit */
+.ai-top { display: flex; flex-direction: column; }
+.ai-top-row { display: flex; gap: 10px; align-items: center; padding: 6px 4px; border-radius: 6px; min-width: 0; }
+.ai-top-row:hover { background: var(--surface-2); }
+.ai-top-path { display: flex; min-width: 0; }
+.ai-top-path .mid { max-width: 100%; }
+.ai-top-row img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; background: var(--tile-bg); flex: none; }
+.ai-score { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; width: 80px; flex: none; }
+.ai-score .bar { width: 100%; }
+.ai-score .bar > i { background: var(--warn); }
+.ai-fam { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r); }
+
+/* benchmark */
+.ai-cfg { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-cfg .aip-pick { width: auto; max-width: 340px; flex: 1 1 220px; }
+.ai-cfg-n { width: 22px; height: 22px; border-radius: 50%; background: var(--surface-3); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 11.5px; flex: none; }
+.ai-table-wrap { overflow-x: auto; }
+.ai-bench tr.best td { background: var(--accent-soft); }
+.ai-f1 { display: flex; align-items: center; gap: 6px; min-width: 110px; }
+.ai-f1 .bar { flex: 1 1 auto; }
+
+/* class cards */
+.ai-cc { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .ai-cc { grid-template-columns: minmax(0, 1fr); } }
+.ai-cc-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); padding: 4px; max-height: calc(100vh - 260px); overflow-y: auto; }
+.ai-cc-row { display: flex; gap: 8px; align-items: center; border: 0; background: none; text-align: left; padding: 7px 8px; border-radius: 6px; min-width: 0; cursor: pointer; color: var(--text); }
+.ai-cc-row:hover { background: var(--surface-2); }
+.ai-cc-row.active { background: var(--accent-soft); }
+.ai-cc-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ai-cc-editor { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 16px; min-width: 0; }
+.ai-cc-title { margin: 0; font-size: 15px; font-weight: 600; }
+.ai-cc-pv { margin: 0; padding: 10px 12px; border-radius: var(--r); background: var(--surface-2); font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; color: var(--text-2); }
+.ai-cc-ex { display: flex; flex-wrap: wrap; gap: 8px; }
+.ai-ex { position: relative; margin: 0; border-radius: 6px; overflow: hidden; border: 2px solid var(--ai-ok-text); }
+.ai-ex.neg { border-color: var(--ai-bad-text); }
+.ai-ex-pol { position: absolute; left: 0; top: 0; min-width: 18px; text-align: center; font-weight: 700; font-size: 12px; color: #fff; background: var(--ai-chip-bg); border-radius: 0 0 4px 0; }
+.ai-ex-x { position: absolute; right: 2px; top: 2px; width: 18px; height: 18px; border-radius: 50%; border: 0; background: var(--ai-chip-bg); color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.ai-ex-add { width: 112px; height: 112px; border: 1px dashed var(--border-strong); border-radius: 6px; background: none; color: var(--text-2); display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; }
+.ai-ex-add:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); }
+.ai-ex-add:disabled { opacity: .55; cursor: default; }
+.ai-crop { display: block; background: var(--tile-bg) no-repeat; overflow: hidden; }
+.ai-crop > img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.ai-crop.missing::after { content: '?'; display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-3); }
+.ai-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; max-height: 60vh; overflow-y: auto; }
+.ai-pick { position: relative; padding: 0; border: 2px solid transparent; border-radius: 6px; background: none; cursor: pointer; overflow: hidden; }
+.ai-pick .ai-crop { width: 100% !important; height: auto !important; aspect-ratio: 1; }
+.ai-pick:hover:not(:disabled) { border-color: var(--border-strong); }
+.ai-pick.on { border-color: var(--accent); }
+.ai-pick.on::after { content: attr(data-pol); position: absolute; left: 0; top: 0; min-width: 20px; font-weight: 700; color: var(--on-accent); background: var(--accent); border-radius: 0 0 4px 0; }
+.ai-pick:disabled { opacity: .45; cursor: default; }
+
+/* runs */
+.ai-spark { display: flex; align-items: flex-end; gap: 2px; height: 56px; flex: 1 1 260px; max-width: 520px; padding-top: 4px; }
+.ai-spark i { flex: 1 1 0; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; }
+.ai-spark i.zero { background: var(--border-strong); }
+/* Runs & cost fits the ~960 px card of a 1280 px window: cells stay on one line, a long model or pipeline name
+   truncates (full name in the title), status is one short chip and the delete button takes no more than itself. */
+.ai-runs td { white-space: nowrap; }
+.ai-runs th, .ai-runs td { padding-left: 8px; padding-right: 8px; }
+.ai-runs-src .truncate { display: block; max-width: 200px; }
+.ai-runs td.ai-runs-kind { white-space: normal; min-width: 64px; }      /* "economy" / "append" chips go under the kind when room is short */
+.ai-runs-kind .chip { white-space: nowrap; }
+.ai-runs .ai-runs-del { width: 1%; padding-left: 0; }
+
+/* fields with a segmented control keep it at its natural width */
+.field > .ai-seg, .ai-page .field > .seg, .aib .field > .seg { align-self: flex-start; }
+.ai-fields-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.aip-dlg { min-width: min(420px, 80vw); }
+.aib-form .aip-classes { max-width: 560px; margin-top: 4px; }
+.ai-narrow { max-width: 920px; }
+.ai-audit-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 1680px) { .ai-audit-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }   /* the card is half the page: 4 tiles truncate their labels below this */
+.ai-lbl { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.ai-fam-lab { width: 150px; font-weight: 600; }
+.ai-gap6 { gap: 6px; }
+.aip-menu .menu-item > .ico { flex: none; }
+.aip-sum { font-size: 11.5px; color: var(--text-2); }
+.ai-crop { position: relative; }
+.ai-crop-box { position: absolute; border: 1px solid #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .65); pointer-events: none; }
+.aip-menu .menu-text { white-space: normal; overflow: visible; min-width: 0; flex: 1 1 auto; }
+.ai-pc summary { cursor: pointer; color: var(--text-2); }
+.ai-pc[open] summary { margin-bottom: 6px; }
+
+/* provider status dots: ready · checking (probe pending) · off (needs a key / setup) · bad (configured, not answering) */
+.ai-prov .dot.checking { background: transparent; box-shadow: inset 0 0 0 2px var(--text-3); }
+.ai-prov .dot.bad { background: var(--ai-bad-text); }
+
+/* suggest class names */
+.ai-nm-modal { width: min(920px, 94vw); }
+.ai-nm-foot { justify-content: flex-end; width: 100%; }
+.ai-nm .aip-chips { max-height: 132px; overflow-y: auto; }
+.ai-nm-list { display: flex; flex-direction: column; }
+.ai-nm-row { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: 16px; padding: 12px 0; border-top: 1px solid var(--border); }
+.ai-nm-row:first-child { border-top: 0; padding-top: 4px; }
+@media (max-width: 760px) { .ai-nm-row { grid-template-columns: minmax(0, 1fr); } }
+.ai-nm-cur { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ai-nm-crops { display: grid; grid-template-columns: repeat(4, 60px); gap: 4px; min-height: 60px; }
+.ai-nm-crops .ai-crop { border-radius: 4px; }
+.ai-nm-fields { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ai-nm-f { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; align-items: start; }
+.ai-nm-f > span { padding-top: 5px; }
+.ai-nm-f .input { width: 100%; }
+.ai-nm-act { min-height: 28px; align-items: center; }
+.ai-nm-prob:empty { display: none; }
+.ai-nm-act .xs .ico { vertical-align: -2px; color: var(--ai-ok-text); }
+.ai-cc-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* The banner's sentence starts beside its icon (a content-sized basis put it on a line of its own below 1680 px);
+   the button sits to the right, or under the text when there is no room. */
+.ai-cc-bar.callout { align-items: flex-start; }
+.ai-cc-bar.callout > .grow { flex: 1 1 0; min-width: min(240px, 100% - 25px); }
+.ai-cc-bar.callout > .btn { align-self: center; }
+.ai-cc-bar:not(.callout) { padding: 0 2px; color: var(--text-2); }
+
+/* provider batches (economy) */
+.ai-pb-list { display: flex; flex-direction: column; }
+.ai-pb { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); min-width: 0; }
+.ai-pb:first-child { border-top: 0; padding-top: 0; }
+.ai-pb .progress { max-width: 420px; }
+button.aip-chip:disabled, button.aip-chip:disabled:hover { cursor: default; color: var(--text-3); background: none; border-color: transparent; opacity: 1; }
+button.aip-chip:disabled > i { opacity: .3; }
