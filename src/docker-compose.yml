@@ -1,15 +1,34 @@
 services:
   fovea:
-    build: .
+    build:
+      context: .
+      args:
+        INSTALL_AI: ${INSTALL_AI:-1}          # 0 = small image without local/cloud AI packages
     container_name: fovea
+    # Only this computer can connect (Fovea has no user accounts). To open it to your network, change this to
+    # "8888:8000", set FOVEA_TOKEN below, and remove FOVEA_LOCAL_NETS. Every browser then counts as another machine,
+    # this computer's too (they all arrive from Docker's bridge): it asks for the token, and cloud AI and key changes
+    # need FOVEA_ALLOW_REMOTE_AI=1 in .env (README "Docker").
     ports:
-      - "8888:8000"
+      - "127.0.0.1:8888:8000"
+    user: "${UID:-1000}:${GID:-1000}"         # files Fovea writes into your folders stay yours (set UID/GID in .env)
     volumes:
-      - .:/app                 # live code + index db (./data) + models (./model)
-      - ${HOST_PATH}:/host     # your datasets root, browsable inside the app
+      - ./data:/app/data                      # index DB, thumbnail cache, settings
+      - ./model:/app/model                    # model weights
+      - ${HOST_PATH}:/host                    # your datasets root, browsable inside the app
     environment:
       - HOST_PATH=${HOST_PATH}
       - CONTAINER_MOUNT=/host
-      - FOVEA_DATA_DIR=/app/data
-      - FOVEA_MODEL_DIR=/app/model
+      # Requests from the host browser reach the container from Docker's bridge, not 127.0.0.1; with the port
+      # bound to 127.0.0.1 above, those addresses can only be this computer.
+      - FOVEA_LOCAL_NETS=172.16.0.0/12,192.168.65.0/24
+      # Passed through only when set in your shell or .env (never written into the image):
+      - FOVEA_TOKEN                           # access token required from other machines
+      - FOVEA_ALLOWED_HOSTS                   # extra host names, e.g. fovea.lab.example
+      - FOVEA_ALLOWED_ORIGINS                 # public origin behind a reverse proxy, e.g. https://fovea.example.com
+      - FOVEA_ALLOW_REMOTE_AI                 # 1 = browsers on other machines may use cloud AI and the saved keys
+      - ANTHROPIC_API_KEY
+      - GEMINI_API_KEY
+      - OPENAI_API_KEY
+    stop_grace_period: 15s
     restart: unless-stopped

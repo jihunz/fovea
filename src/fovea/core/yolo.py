@@ -1,87 +1,48 @@
-"""Optional Ultralytics YOLO integration (lazy; degrades gracefully when not installed)."""
+"""Legacy facade over the AI registry's local YOLO provider (kept for /api/meta and older callers).
+
+``available()`` never imports torch/ultralytics (a cached ``find_spec``): the old implementation imported them on
+the first /api/meta call and stalled every other request for 10+ s (finding C13). ``list_models()`` lists detector
+weights only — MODEL_DIR also holds SAM checkpoints and text encoders now.
+"""
 from __future__ import annotations
 
-import threading
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
-from ..config import MODEL_DIR
-
-_models: Dict[str, Any] = {}
-_lock = threading.Lock()
+from ..ai import local, weights
 
 
 def available() -> bool:
-    try:
-        import ultralytics  # noqa: F401
-        return True
-    except Exception:
-        return False
+    return local.ultralytics_status()[0]
 
 
 def list_models() -> List[dict]:
     out = []
-    if MODEL_DIR.is_dir():
-        for p in sorted(MODEL_DIR.iterdir()):
-            if p.suffix.lower() in (".pt", ".onnx", ".engine") and p.is_file():
-                out.append({"name": p.stem, "file": p.name, "size_mb": round(p.stat().st_size / 1e6, 1),
-                            "loaded": p.stem in _models})
+    for w in weights.local_weights("yolo"):
+        if w["task"] == "classify":
+            continue
+        out.append({"name": w["name"], "file": w["file"], "size_mb": w["size_mb"], "task": w["task"],
+                    "loaded": local.CACHE.is_loaded("yolo", w["name"])})
     return out
 
 
-def _path_for(name: str) -> Path:
-    for ext in (".pt", ".onnx", ".engine"):
-        p = MODEL_DIR / f"{name}{ext}"
-        if p.is_file():
-            return p
-    raise FileNotFoundError(f"Model not found: {name}")
+def model_classes(name: str) -> Dict[int, str]:
+    from ..ai.providers.yolo import model_names
+    return model_names(name, "yolo")
 
 
 def load(name: str):
-    with _lock:
-        m = _models.get(name)
-        if m is not None:
-            return m
-        from ultralytics import YOLO
-        m = YOLO(str(_path_for(name)))
-        _models[name] = m
-        return m
-
-
-def model_classes(name: str) -> Dict[int, str]:
-    m = load(name)
-    names = getattr(m, "names", None) or {}
-    if isinstance(names, list):
-        return {i: n for i, n in enumerate(names)}
-    return {int(k): str(v) for k, v in names.items()}
+    from ..ai.providers.yolo import load_entry
+    return load_entry(name, "yolo").obj
 
 
 def detect(name: str, image_path: str, conf: float = 0.25, classes: Optional[List[int]] = None,
            imgsz: Optional[int] = None, iou: float = 0.7) -> List[List[float]]:
-    m = load(name)
-    kwargs: Dict[str, Any] = {"conf": conf, "verbose": False, "iou": iou}
-    if classes:
-        kwargs["classes"] = list(classes)
-    if imgsz:
-        kwargs["imgsz"] = int(imgsz)
-    results = m(str(image_path), **kwargs)
-    dets: List[List[float]] = []
-    for r in results:
-        b = getattr(r, "boxes", None)
-        if b is None:
-            continue
-        xywhn = b.xywhn.tolist()
-        cls = b.cls.tolist()
-        cf = b.conf.tolist()
-        for i in range(len(xywhn)):
-            xc, yc, w, h = xywhn[i]
-            dets.append([int(cls[i]), round(xc, 6), round(yc, 6), round(w, 6), round(h, 6), round(float(cf[i]), 4)])
-    return dets
+    """Raw model-id detections ``[[model_cls, xc, yc, w, h, conf]]`` — callers must map ids before writing."""
+    from ..ai.providers.yolo import clean_imgsz, load_entry
+    entry = load_entry(name, "yolo")
+    raw = local.predict(entry, image_path, conf=conf, iou=iou, imgsz=clean_imgsz(imgsz), classes=classes)
+    return [[d["mcls"], d["xc"], d["yc"], d["w"], d["h"], d["conf"]] for d in raw]
 
 
 def unload(name: Optional[str] = None) -> None:
-    with _lock:
-        if name:
-            _models.pop(name, None)
-        else:
-            _models.clear()
+    local.CACHE.unload("yolo", name)

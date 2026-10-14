@@ -11,12 +11,18 @@
 //                    surround shrinks the luminance jump between the image and its edges.
 //   rest   0 | minutes   opt-in reminder after that much continuous activity (evidence is mixed, so off
 //                    by default; see rest reminder below).
+//   palette default | cvd   class colours; "cvd" orders colours that stay distinct with colour-vision deficiency.
+//
+// templates/app.html applies dim and stage from localStorage before the first paint (no bright frame on
+// reload); apply() here keeps them in sync afterwards.
 import { h } from './dom.js';
 import { icon } from './icons.js';
+import { setPalette } from './colors.js';
 
 const KEY = 'fovea.comfort';
-const DEFAULTS = { dim: 0, stage: 'dark', rest: 0 };
+const DEFAULTS = { dim: 0, stage: 'dark', rest: 0, palette: 'default' };
 let prefs = load();
+const subs = new Set();
 
 function load() {
   try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; } catch (e) { return { ...DEFAULTS }; }
@@ -30,15 +36,21 @@ function apply() {
   else { root.removeAttribute('data-dim'); root.style.removeProperty('--dim'); }
   if (prefs.stage === 'black' || prefs.stage === 'gray') root.setAttribute('data-stage', prefs.stage);
   else root.removeAttribute('data-stage');
+  setPalette(prefs.palette);
 }
+// The palette is needed by the first module that draws a box, before init() runs.
+setPalette(prefs.palette);
 
 // ------------------------------------------------------------------ rest reminder
 // Software reminders to take breaks changed behaviour and eased symptoms for as long as they ran; 20-second
 // breaks inside a demanding 40-minute task did not help; accuracy in high-rate visual inspection fell with
 // time on task. So: off unless asked for, active time only (five idle minutes count as a break taken),
-// suggests a real break rather than a glance, and is a static note — no dialog, sound or motion.
+// suggests a real break rather than a glance, and is a static note — no dialog, sound or motion. It sits at
+// the bottom left, clear of the header controls. Escape dismisses it only while focus is inside it: every other
+// Escape belongs to whatever is open (Inspect, a menu, a selection) and must not count as a break taken.
 const IDLE_BREAK_MS = 5 * 60 * 1000;
-let activeSince = 0, lastInput = 0, banner = null;
+const SNOOZE_MS = 10 * 60 * 1000;
+let activeSince = 0, lastInput = 0, banner = null, snoozedUntil = 0;
 
 function onInput() {
   const now = Date.now();
@@ -47,18 +59,20 @@ function onInput() {
   maybeRemind(now);
 }
 function maybeRemind(now = Date.now()) {
-  if (!prefs.rest || banner || !activeSince) return;
+  if (!prefs.rest || banner || !activeSince || now < snoozedUntil) return;
   if (now - activeSince >= prefs.rest * 60 * 1000) showReminder(Math.round((now - activeSince) / 60000));
 }
 function hideReminder() { if (banner) { banner.remove(); banner = null; } }
+function done() { hideReminder(); activeSince = Date.now(); }
+function snooze() { hideReminder(); snoozedUntil = Date.now() + SNOOZE_MS; }
 function showReminder(minutes) {
-  const done = () => { hideReminder(); activeSince = Date.now(); };
-  banner = h('div', { class: 'rest-banner', role: 'status' },
+  banner = h('div', { class: 'rest-banner', role: 'status', onKeydown: (e) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); e.stopPropagation(); done(); } } },
     icon('eye', 15),
     h('div', { class: 'grow' },
-      h('div', { class: 'strong' }, `${minutes} minutes of continuous work`),
-      h('div', { class: 'small' }, 'Look at something far away — 6 m or more — for a minute or two. A few seconds is not enough.')),
-    h('button', { class: 'btn btn-sm', onClick: done }, 'OK'));
+      h('div', { class: 'strong' }, `${minutes} minute${minutes === 1 ? '' : 's'} of continuous work`),
+      h('div', { class: 'small' }, 'Look at something far away — 6 m or more — for a minute or two. A few seconds is not enough.'),
+      h('div', { class: 'row mt-8' }, h('button', { class: 'btn btn-sm btn-primary', onClick: done }, 'OK, taking a break'),
+        h('button', { class: 'btn btn-sm btn-ghost', onClick: snooze }, 'Snooze 10 min'))));
   document.body.appendChild(banner);
 }
 
@@ -73,10 +87,14 @@ function start() {
 export const comfort = {
   get: () => ({ ...prefs }),
   set(patch) {
+    const before = prefs;
     prefs = { ...prefs, ...patch };
     save(); apply();
     if (!prefs.rest) hideReminder();
     maybeRemind();
+    subs.forEach(fn => { try { fn(prefs, before); } catch (e) { console.error(e); } });
   },
+  /** fn(prefs, before) after every change (e.g. redraw boxes when the palette changes). */
+  subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
   init() { apply(); start(); },
 };

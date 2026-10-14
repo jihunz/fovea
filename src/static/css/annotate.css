@@ -1,0 +1,194 @@
+/* annotate — owned by the annotate feature; loaded after fovea.css */
+
+.ann { grid-template-columns: 248px minmax(0, 1fr) 284px; position: relative; }
+.ann-tools .sec h4 .ico, .ann-side .sec h4 .ico { width: 13px; height: 13px; }
+
+/* ---- stage: image layer + overlay layer (pointer moves repaint only the overlay) */
+.ann-stage canvas.ann-img { pointer-events: none; }
+.ann-stage canvas.ann-ov { outline: none; }
+.ann-stage .hud { flex-wrap: wrap; right: 170px; pointer-events: none; z-index: 2; }
+.ann-stage .hud .chip { gap: 6px; }
+.ann-stage .hud .chip .swatch { width: 9px; height: 9px; }
+.ann-stage .hud .chip.warn { background: rgba(120, 72, 0, .78); color: #fde68a; }
+.ann-stage .hud .chip.accent { background: rgba(6, 78, 70, .82); color: #99f6e4; }
+.ann-stage .stage-msg { text-align: center; padding: 24px; line-height: 1.5; z-index: 2; }
+.ann-stage .stage-msg .ann-empty { pointer-events: auto; display: flex; flex-direction: column; gap: 12px; align-items: center; color: #d4d5d9; }
+.ann-stage .stage-msg .ann-empty .btn { background: rgba(255,255,255,.08); color: #ececec; border-color: rgba(255,255,255,.18); }
+.ann-stage .stage-msg .ann-empty .btn:hover { background: rgba(255,255,255,.14); }
+
+/* static note line: one-off results shown where the user is looking (not a toast) */
+.ann-note { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 3; max-width: min(620px, 90%);
+  padding: 6px 12px; border-radius: 8px; font-size: 12.5px; line-height: 1.4; background: rgba(15, 16, 18, .86); color: #ececec;
+  border: 1px solid rgba(255,255,255,.14); pointer-events: none; text-align: center; }
+.ann-note.ok { border-color: rgba(34,197,94,.55); }
+.ann-note.warn { border-color: rgba(245,158,11,.65); color: #fde68a; }
+.ann-note.error { border-color: rgba(239,68,68,.7); color: #fecaca; }
+
+.ann-stage .ann-loupe { position: absolute; inset: auto; width: 160px; height: 160px; z-index: 4; pointer-events: none; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.7); box-shadow: 0 4px 18px rgba(0,0,0,.55); background: #000; }
+.ann-stage .ann-minimap { position: absolute; inset: 10px 10px auto auto; z-index: 3; border: 1px solid rgba(255,255,255,.55); border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0,0,0,.5); cursor: crosshair; }
+
+/* ---- sequence filmstrip: an overlay along the bottom of the stage, so showing or hiding it never resizes the canvas.
+   The stage is dark in both themes, so the strip is too. Static: no transitions, no smooth scrolling. */
+.ann-film { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; gap: 10px; padding: 4px 8px; box-sizing: border-box;
+  background: rgba(12, 13, 15, .92); border-top: 1px solid rgba(255,255,255,.12); color: #e4e5e8; }
+.ann-film.hidden { display: none; }
+.ann.film-on .ann-stage .hud { bottom: 94px; }
+.ann-film-label { flex: 0 0 132px; min-width: 0; display: flex; flex-direction: column; gap: 1px; padding-top: 2px; }
+.ann-film-label .fs-title { font-family: var(--mono); font-size: 11px; color: #f1f2f4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ann-film-label .fs-sub { font-size: 11px; color: #b9bbc1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ann-film-label .fs-btn { margin-top: auto; align-self: flex-start; max-width: 100%; height: 22px; padding: 0 7px; font-size: 11.5px; gap: 4px;
+  background: rgba(255,255,255,.08); color: #ececec; border-color: rgba(255,255,255,.22); }
+.ann-film-label .fs-btn:hover { background: rgba(255,255,255,.15); }
+.ann-film-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; scroll-behavior: auto; }
+.ann-film-scroll::-webkit-scrollbar { display: none; }
+.ann-film-inner { position: relative; height: 72px; }
+.fs-tile { position: absolute; top: 3px; height: 66px; cursor: pointer; border-radius: 3px; }
+.fs-tile .fs-pic { position: absolute; left: 0; top: 0; right: 0; height: 58px; background: #000; border-radius: 3px; overflow: hidden; display: block; }
+.fs-tile .fs-pic > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.fs-tile .fs-pic.is-error::after { font-size: 13px; }
+.fs-tile:hover .fs-pic { box-shadow: 0 0 0 1px rgba(255,255,255,.55); }
+.fs-tile.current { outline: 2px solid #5eead4; outline-offset: 1px; }   /* the stage is dark in both themes */
+.fs-tile.out { opacity: .38; }
+.fs-tile::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px; z-index: 1; border-radius: 3px 3px 0 0; }
+.fs-tile.rv-approved::before { background: var(--approve); }
+.fs-tile.rv-flagged::before { background: var(--flag); }
+.fs-tile.rv-excluded::before { background: var(--exclude); }
+.fs-marks { position: absolute; left: 2px; top: 5px; right: 2px; display: flex; gap: 2px; z-index: 1; pointer-events: none; overflow: hidden; }
+.fs-m, .fs-n, .fs-kf { font-style: normal; font: 600 9.5px/13px var(--mono); padding: 0 3px; border-radius: 3px; background: rgba(0,0,0,.8); color: #fff; }
+.fs-m.ai { color: #99f6e4; }
+.fs-m.sus { color: #fde68a; }
+.fs-m.warn { color: #fecaca; }
+.fs-n { position: absolute; right: 2px; bottom: 9px; z-index: 1; pointer-events: none; }
+.fs-n.zero { color: #c4c6cc; }
+.fs-kf { position: absolute; left: 2px; bottom: 9px; z-index: 1; pointer-events: none; color: #99f6e4; }
+.fs-kf:empty { display: none; }
+.fs-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; display: flex; gap: 1px; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08); }
+.fs-bar i { flex: 1; }
+
+/* ---- left panel */
+.ann-tool-row { grid-template-columns: repeat(5, 1fr); }
+.ann-tool-row .tool-btn { padding: 7px 2px; }
+.ann-class-list { max-height: 34vh; overflow: auto; margin: 0 -4px; padding: 0 4px; }
+.ann-class-target.accent-text { color: var(--accent-text); text-transform: none; letter-spacing: 0; }
+.class-row { padding: 0; gap: 2px; }
+.class-row .class-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 5px 7px; border: 0; background: none; color: inherit;
+  font: inherit; text-align: left; cursor: pointer; border-radius: 5px; }
+.class-row .class-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.class-row .class-eye { opacity: 0; width: 22px; height: 22px; flex: none; }
+.class-row:hover .class-eye, .class-row .class-eye:focus-visible, .class-row.is-hidden .class-eye { opacity: 1; }
+.class-row.is-hidden .class-pick .name, .class-row.is-hidden .class-pick .swatch { opacity: .45; }
+/* Two-key hotkeys (10+): told apart by a dashed outline, not by fading — faded text failed 4.5:1 */
+.class-row .kbd-dim { border-style: dashed; border-bottom-width: 1px; }
+.ann-options .seg button { padding: 0 6px; font-size: 11.5px; }
+.ann-opt { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 0; min-height: 28px; }
+.ann-opt > .small { min-width: 0; }
+.ann-hint { line-height: 1.5; }
+.ann-ai:empty { display: none; }
+
+/* ---- right panel */
+.ann-ws .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.ann-review { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.ann-review .btn { padding: 0 4px; justify-content: center; min-width: 0; overflow: hidden; }
+.ann-kv { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 3px 8px; }
+.ann-side .sec .row.ann-prop-actions { flex-wrap: nowrap; }
+
+/* virtualised box list */
+.ann-vlist { position: relative; overflow: auto; border-radius: 6px; outline: none; }
+.ann-vlist:focus-visible { box-shadow: 0 0 0 2px var(--accent-ring); }
+.ann-vlist-inner { position: relative; }
+.ann-vlist .box-row { position: absolute; left: 0; right: 0; height: 24px; padding: 0 6px; }
+.box-row .warn { font-size: 11px; color: var(--warn); width: 12px; text-align: center; flex: none; }
+.box-row .del { opacity: 0; }
+.box-row:hover .del, .box-row.active .del, .box-row:focus-within .del { opacity: 1; }
+.box-row.is-hidden { opacity: .5; }
+.box-row .geo { font-variant-numeric: tabular-nums; }
+
+/* proposals */
+.ann-props h4 .badge { margin-left: 2px; }
+/* the run's model id keeps its own case: .sec h4 is upper-case small caps */
+.ann-props h4 .ann-prop-src { min-width: 0; max-width: 150px; text-transform: none; letter-spacing: 0; font-weight: 400; }
+/* fixed height: the "Reject n hidden" button coming and going never moves the threshold slider under the pointer */
+.ann-side .sec .row.ann-prop-stats { flex-wrap: nowrap; height: 26px; gap: 6px; }
+.ann-prop-stats > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ann-side .sec .row.ann-prop-stats .btn, .ann-side .sec .row.ann-box-empty .btn { flex: none; }
+.ann-side .sec .row.ann-box-empty { flex-wrap: wrap; gap: 4px 8px; }
+.ann-thr { display: grid; grid-template-columns: auto 1fr 32px auto auto; align-items: center; gap: 6px; margin: 6px 0; }
+/* { } step the threshold: key caps that are buttons (a 22 px target, a hover state, no motion) */
+.ann-thr-step { height: 22px; min-width: 22px; line-height: 1; cursor: pointer; }
+.ann-thr-step:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: var(--text-3); }
+.ann-thr-step:disabled { cursor: default; opacity: .45; }
+.ann-prop-list { display: flex; flex-direction: column; gap: 1px; max-height: 30vh; overflow: auto; margin-top: 6px; }
+.prop-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px 2px 7px; border-radius: 5px; font-size: 12px; cursor: pointer; border: 1px dashed transparent; min-height: 26px; }
+.prop-row:hover { background: var(--surface-2); }
+.prop-row.active { background: var(--accent-soft); border-color: var(--accent); }
+.prop-row .conf { width: 30px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.prop-row .glyph { width: 14px; text-align: center; color: var(--text-2); }
+.prop-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-row .btn-icon { width: 22px; height: 22px; }
+
+.ann-range-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 8px; align-items: center; }
+.ann-range-grid .select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+.ann-range-status:empty { display: none; }
+.ann-range-status .btn { height: 22px; padding: 0 6px; margin-left: 4px; }
+/* a data-quality flag with its one-click fix (seq_gap → Fill from neighbours) */
+.ann-flag-fix { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; max-width: 100%; }
+.ann-flag-fix .btn { height: 22px; padding: 0 7px; gap: 4px; }
+/* a flag chip that shows what differs: a toggle; pressed = amber, the colour of its ghost on the image */
+.ann-flag-chip { font: inherit; font-size: 11.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.ann-flag-chip.active { border-color: #f59e0b; box-shadow: inset 0 0 0 1px #f59e0b; }
+.ann-flag-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ann-issues { margin-bottom: 8px; }
+.ann-issues:empty { display: none; }
+.ann-flag-detail { margin: -2px 0 10px; color: var(--text-2); line-height: 1.5; }
+.ann-flag-detail .btn { height: 24px; padding: 0 8px; gap: 4px; }
+.ann-vlist .box-row.flagged { box-shadow: inset 3px 0 0 #f59e0b; }
+/* HUD legend of that ghost: an amber dash (or ring, for flags that only name boxes) */
+.ann-stage .hud .chip.flag-legend { color: #fde68a; }
+.ann-legend-dash { flex: none; width: 16px; height: 0; border-top: 2px dashed #f59e0b; }
+.flag-legend.ring .ann-legend-dash { width: 10px; height: 8px; border: 2px solid #f59e0b; border-radius: 1px; }
+/* key badges inside a sentence ("Press I to propose…"), as in the AI panel */
+.ann-prop-empty .kbd { height: 14px; min-width: 14px; padding: 0 3px; font-size: 10px; border-bottom-width: 1px; vertical-align: 1px; line-height: 1; }
+.ann-conflict { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); }
+
+/* ---- bottom bar */
+.save-state.loading { color: var(--text-3); }
+.save-state .btn { height: 22px; padding: 0 6px; }
+.ann-bottom .btn.paused { border-style: dashed; }
+.ann-zoom { width: 44px; text-align: right; }
+/* never squeezed on narrow windows; annotate.js sizes it to "total / total" for the list (tabular digits: 1 ch each) */
+.ann-bottom .idx { flex: none; width: calc(15ch + 24px); font-variant-numeric: tabular-nums; }
+.ann-panel-btn { display: none; }
+
+/* ---- popover: class picker, box menu, image adjustments */
+.ann-pop { position: fixed; z-index: 210; width: 260px; max-height: min(460px, 80vh); display: flex; flex-direction: column; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-md); padding: 4px; }
+.ann-pop .menu-item { padding: 5px 8px; font-size: 12.5px; gap: 8px; }
+.ann-pop .menu-item.active { background: var(--accent-soft); color: var(--text); }
+.ann-pop .menu-item.current { font-weight: 600; }
+.ann-pop .menu-item .swatch { width: 10px; height: 10px; }
+.ann-pop .menu-item:disabled { opacity: .5; cursor: not-allowed; }
+.ann-pop-search { padding: 4px; }
+.ann-pop-search .input { width: 100%; }
+.ann-pop-list { overflow: auto; min-height: 0; flex: 1; }
+
+/* ---- narrow screens: the side panel becomes a drawer instead of disappearing */
+@media (max-width: 1100px) {
+  .ann { grid-template-columns: 220px minmax(0, 1fr) 260px; }
+  .ann-hide-narrow { display: none; }
+}
+@media (max-width: 900px) {
+  .ann { grid-template-columns: 200px minmax(0, 1fr); }
+  .ann .ann-side { display: block; position: absolute; top: 0; right: 0; bottom: 44px; width: min(300px, 80vw); z-index: 6;
+    box-shadow: var(--shadow-lg); visibility: hidden; }
+  .ann.side-open .ann-side { visibility: visible; }
+  .ann-panel-btn { display: inline-flex; }
+  .ann-bottom .slider { display: none; }
+}
+.ann-side .sec .row.ann-ws-actions .btn { flex: 0 0 auto; }
+/* Sequence panel: the keyframe line keeps its Clear button beside it; the interpolation Review button never
+   overflows the panel */
+.ann-side .sec .row.ann-kf-row { flex-wrap: nowrap; }
+.ann-side .sec .row.ann-kf-row > .grow { min-width: 0; }
+.ann-side .sec .ann-seq-act { max-width: 100%; min-width: 0; }

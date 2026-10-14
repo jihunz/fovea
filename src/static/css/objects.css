@@ -1,0 +1,150 @@
+/* objects — the Objects tab (patch view): every box as a crop. Loaded after fovea.css.
+   Visual comfort: crops appear in one step once decoded (no fade, no shimmer); empty tiles are flat; the
+   only transitions are short colour changes on hover. */
+
+.objects { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.ob-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); flex-wrap: wrap; flex: none; }
+.ob-toolbar .ob-search { width: 220px; }
+.ob-chipbar { flex: none; background: var(--surface); border-bottom: 1px solid var(--border); }
+.ob-chipbar:has(> .ob-chips:empty) { display: none; }
+.ob-chips { display: flex; align-items: center; gap: 6px; padding: 6px 16px; overflow-x: auto; scrollbar-width: thin; }
+/* More chips past an edge: that edge fades out (static; toggled from the scroll position). */
+.ob-chips.more-r { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent); }
+.ob-chips.more-l { -webkit-mask-image: linear-gradient(to right, transparent, #000 44px); mask-image: linear-gradient(to right, transparent, #000 44px); }
+.ob-chips.more-l.more-r { -webkit-mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent); mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent); }
+.ob-fchip { background: var(--info-soft); color: var(--text); flex: none; }
+.ob-cchip {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-2); font-size: 12px; font-weight: 500;
+  white-space: nowrap; transition: border-color .1s, background .1s;
+}
+.ob-cchip:hover { border-color: var(--text-3); color: var(--text); }
+.ob-cchip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+.ob-cchip.zero:not(.active) { color: var(--text-3); border-style: dashed; }
+.ob-cchip .sw, .ob-pick-item .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,.18); }
+.ob-cchip .idx, .ob-pick-item .idx { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); }
+.ob-cchip.active .idx { color: inherit; }
+.ob-cchip .nm { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.ob-cchip .n { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.ob-cchip.active .n { color: inherit; }
+
+.ob-main { flex: 1; min-height: 0; display: flex; }
+.ob-gridwrap { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
+.ob-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; outline: none; overscroll-behavior: contain; }
+.ob-canvas { position: relative; width: 100%; }
+
+/* --- tiles -------------------------------------------------------------------------------------- */
+.ob-tile {
+  position: absolute; border-radius: 6px; overflow: hidden; background: var(--tile-bg); cursor: pointer; user-select: none;
+  --c: #888; --ct: #fff;
+}
+/* The class-colour frame sits above the crop, so it is visible on any picture. */
+.ob-tile::after { content: ''; position: absolute; inset: 0; border-radius: 6px; box-shadow: inset 0 0 0 2px var(--c); pointer-events: none; z-index: 2; }
+.ob-tile:hover::after { box-shadow: inset 0 0 0 3px var(--c); }
+.ob-tile > img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.ob-tile.is-empty { cursor: default; }
+.ob-tile.is-empty::after { box-shadow: none; }
+.ob-tile.is-failed::before {
+  content: '⚠  Image unavailable'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--text-2); font-size: 11.5px; font-weight: 500; text-align: center; padding: 6px;
+}
+.ob-canvas.small-tiles .ob-tile.is-failed::before { content: '⚠'; font-size: 16px; color: var(--warn); }
+
+/* Box outline: only once there is a picture under it (boxes floating on nothing read as broken). */
+.ob-box { position: absolute; border: 1.5px solid var(--c); box-shadow: 0 0 0 1px rgba(0,0,0,.45); pointer-events: none; z-index: 1; display: none; }
+.ob-tile.has-img .ob-box { display: block; }
+.ob-canvas.no-outline .ob-box { display: none !important; }
+
+.ob-lbl {
+  position: absolute; left: 0; bottom: 0; max-width: 100%; padding: 1px 6px 1px 5px; border-top-right-radius: 5px;
+  background: var(--c); color: var(--ct); font-size: 10.5px; font-weight: 600; line-height: 1.5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 3; pointer-events: none;
+}
+.ob-canvas.no-labels .ob-lbl, .ob-canvas.small-tiles .ob-lbl { display: none; }
+
+.ob-check {
+  position: absolute; left: 5px; top: 5px; width: 18px; height: 18px; border-radius: 50%; z-index: 3;
+  display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.45); border: 1.5px solid rgba(255,255,255,.85); color: transparent;
+}
+.ob-canvas.selecting .ob-tile:not(.is-deleted):not(.is-empty):hover .ob-check { display: flex; }
+.ob-tile.is-selected .ob-check { display: flex; background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.ob-check .ico { width: 11px; height: 11px; }
+.ob-tile.is-selected { box-shadow: 0 0 0 2px var(--accent); }
+.ob-tile.is-selected > img { filter: brightness(.82); }
+
+/* Focus: a neutral ring OUTSIDE the tile, so it never reads as one of the class colours. */
+.ob-tile.is-focus { outline: 2px solid var(--text); outline-offset: 2px; z-index: 4; overflow: visible; }
+.ob-tile.is-focus > img { border-radius: 6px; }
+
+.ob-marks { position: absolute; right: 4px; top: 4px; display: flex; gap: 3px; z-index: 3; pointer-events: none; }
+.ob-mk {
+  display: inline-flex; align-items: center; justify-content: center; gap: 2px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px;
+  background: rgba(0,0,0,.62); color: #fff; font-size: 10.5px; font-weight: 600; line-height: 1;
+}
+.ob-mk .ico { width: 10px; height: 10px; }
+.ob-mk.warn { background: var(--warn); color: #1a1205; }
+.ob-mk.ai { background: #6d28d9; color: #fff; }
+.ob-mk.conf { font-family: var(--mono); font-weight: 500; }
+.ob-canvas.small-tiles .ob-mk.conf { display: none; }
+
+.ob-tile.is-deleted { cursor: default; }
+.ob-tile.is-deleted > img { opacity: .22; }
+.ob-tile.is-deleted::after { box-shadow: inset 0 0 0 1px var(--border-strong); }
+.ob-tile.is-deleted .ob-box, .ob-tile.is-deleted .ob-lbl { display: none !important; }
+.ob-gone {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 3;
+  font-size: 11.5px; font-weight: 600; color: var(--text-2); text-align: center; padding: 4px;
+}
+.ob-tile.is-conflict::after { box-shadow: inset 0 0 0 2px var(--warn); }
+
+/* --- overlays inside the grid area -------------------------------------------------------------- */
+.ob-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--bg); z-index: 6; }
+.ob-msg .empty .btn .ico { width: 15px; height: 15px; color: inherit; }   /* .empty .ico sizes the illustration only */
+.ob-bulk { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); margin: 0; z-index: 7; }
+.ob-bulk .kbd { background: transparent; color: inherit; border-color: color-mix(in srgb, currentColor 40%, transparent); }
+
+.ob-peek { position: absolute; inset: 0; z-index: 8; background: var(--stage); color: #e8e8e8; display: flex; flex-direction: column; overflow: hidden; }
+.ob-peek-top { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; flex: none; font-size: 12px; color: #cfcfcf; border-bottom: 1px solid rgba(255,255,255,.08); }
+.ob-peek-top .faint { color: #a9aaaf; }
+.ob-peek-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 12px 16px; overflow: hidden; position: relative; }
+
+/* Full frame with its boxes (peek + details panel). */
+.ob-fpic { position: relative; flex: none; }
+.ob-fpic > img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.ob-fbox { position: absolute; border: 1px solid var(--c); opacity: .7; pointer-events: none; }
+.ob-fbox.focus { border-width: 2px; opacity: 1; box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 0 0 9999px rgba(0,0,0,.28); z-index: 2; }
+.ob-fbox.focus.deleted { border-style: dashed; }
+/* AI-suggested fit for a loose box: dashed and static, like every proposal; under the focused box (and its label) */
+.ob-fbox.suggest { border: 2px dashed var(--c); opacity: 1; z-index: 2; box-shadow: 0 0 0 1px rgba(0,0,0,.5); }
+.ob-flbl { position: absolute; left: -2px; bottom: 100%; padding: 1px 5px; border-radius: 3px 3px 0 0; font-size: 10.5px; font-weight: 600; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+
+/* --- details panel ------------------------------------------------------------------------------ */
+.ob-panel { width: 300px; flex: none; border-left: 1px solid var(--border); background: var(--surface); overflow-y: auto; display: flex; flex-direction: column; }
+.ob-panel > * { flex: none; }   /* the panel scrolls; nothing in it is squeezed */
+.ob-panel-frame { background: var(--stage); display: flex; align-items: center; justify-content: center; padding: 12px; min-height: 160px; overflow: hidden; }
+.ob-panel-sec { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.ob-panel-empty { padding: 16px 14px; }
+.ob-kv { display: grid; grid-template-columns: 58px 1fr; gap: 4px 8px; font-size: 12px; }
+.ob-kv b { color: var(--text-3); font-weight: 500; }
+.ob-kv span { min-width: 0; overflow-wrap: anywhere; }
+.ob-sus { padding: 6px 8px; border-radius: var(--r-sm); background: var(--surface-2); font-size: 12px; }
+.ob-sw { width: 10px; height: 10px; border-radius: 3px; flex: none; display: inline-block; box-shadow: inset 0 0 0 1px rgba(0,0,0,.18); }
+
+/* --- status line -------------------------------------------------------------------------------- */
+.ob-status { display: flex; align-items: center; gap: 12px; height: 34px; padding: 0 16px; flex: none; background: var(--surface); border-top: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
+.ob-status-l { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; }
+.ob-status-l .truncate { min-width: 0; }
+.ob-status-r { display: flex; align-items: center; gap: 6px; flex: none; max-width: 60%; white-space: nowrap; overflow: hidden; }
+.ob-note { display: inline-flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; }
+.ob-note.ok { color: var(--ok); } .ob-note.warn { color: var(--warn); } .ob-note.danger { color: var(--danger); } .ob-note.info { color: var(--text-2); }
+.ob-status .elapsed { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text-3); }
+
+/* --- class picker ------------------------------------------------------------------------------- */
+.ob-pick-list { display: flex; flex-direction: column; max-height: 300px; overflow-y: auto; }
+.ob-pick-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border: 0; background: none; border-radius: 4px; text-align: left; font-size: 12.5px; color: var(--text); }
+.ob-pick-item:hover, .ob-pick-item.active { background: var(--surface-2); }
+.ob-pick-item.active { box-shadow: inset 0 0 0 1px var(--accent); }
+.ob-display { padding: 4px; }
+
+@media (max-width: 1100px) { .ob-panel { width: 260px; } .ob-toolbar .ob-search { width: 160px; } }
+@media (prefers-reduced-motion: reduce) { .ob-cchip { transition: none; } }

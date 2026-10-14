@@ -1,0 +1,4 @@
+# Tests: cd src && python -m pytest tests -q
+-r requirements.txt
+pytest>=8
+httpx>=0.27                 # fastapi.testclient
