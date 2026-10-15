@@ -2,7 +2,8 @@
 
 * ``ai.providers`` — ``{provider_id: {base_url, default_model, effort, enabled, concurrency, spend_cap_usd,
   batch_mode, coord}}`` (only keys the user changed are stored; :func:`provider_config` fills defaults).
-* ``ai.settings`` — process-wide local inference settings: ``{device: auto|cpu|mps|cuda, keep_models: 1..4}``.
+* ``ai.settings`` — process-wide settings: ``{device: auto|cpu|mps|cuda, keep_models: 1..4, folder_roles: ai|names}``
+  (``folder_roles``: how a dataset's image / label folders with other names than images/ and labels/ are found).
 
 Keys never live here (see ``secrets.py``); anything named like a key/secret/token is rejected outright.
 Provider modules read their settings with ``provider_config(self.id)`` at call time.
@@ -23,12 +24,13 @@ SETTINGS_KEY = "ai.settings"
 EFFORTS = ("low", "medium", "high")
 COORDS = ("auto", "qwen3", "qwen25", "gemini", "norm")
 DEVICES = ("auto", "cpu", "mps", "cuda")
+FOLDER_ROLES = ("ai", "names")
 
 DEFAULTS: Dict[str, Any] = {
     "base_url": "", "default_model": "", "effort": "low", "enabled": True, "concurrency": 4,
     "spend_cap_usd": None, "batch_mode": False, "coord": "auto",
 }
-SETTINGS_DEFAULTS: Dict[str, Any] = {"device": "auto", "keep_models": 2}
+SETTINGS_DEFAULTS: Dict[str, Any] = {"device": "auto", "keep_models": 2, "folder_roles": "ai"}
 
 _SECRETISH = re.compile(r"(?i)(key|secret|token|password|passwd|credential)")
 _lock = threading.Lock()
@@ -151,6 +153,11 @@ def update_ai_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
             if not 1 <= n <= 4:
                 raise ConfigError("keep_models must be between 1 and 4")
             clean[k] = n
+        elif k == "folder_roles":
+            s = str(v or "ai").strip().lower()
+            if s not in FOLDER_ROLES:
+                raise ConfigError(f"folder_roles must be one of {', '.join(FOLDER_ROLES)}")
+            clean[k] = s
         else:
             raise ConfigError(f"Unknown setting: {k}")
     with _lock:

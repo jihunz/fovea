@@ -80,6 +80,66 @@ def test_layout_detection(tmp_path):
     assert lay.kind == "list" and lay.sources[0].split == "train"
 
 
+def _lbl(path: Path, text="0 0.5 0.5 0.2 0.2\n"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+@pytest.mark.parametrize("files, expect", [
+    # (image path, label path) per source: imgs/ + annotations/, a renamed labels folder next to images/,
+    # split folders under other names, <split>/<imgs> + <split>/<gt>, and train_images/ + train_labels/
+    (["imgs/a.jpg", "annotations/a.txt"], {"": ("imgs", "annotations")}),
+    (["images/a.jpg", "annotation/a.txt"], {"": ("images", "annotation")}),
+    (["photos/train/a.jpg", "photos/val/b.jpg", "anns/train/a.txt", "anns/val/b.txt"],
+     {"train": ("photos/train", "anns/train"), "val": ("photos/val", "anns/val")}),
+    (["train/imgs/a.jpg", "train/gt/a.txt", "val/imgs/b.jpg", "val/gt/b.txt"],
+     {"train": ("train/imgs", "train/gt"), "val": ("val/imgs", "val/gt")}),
+    (["train_images/a.jpg", "train_labels/a.txt", "val_images/b.jpg", "val_labels/b.txt"],
+     {"train": ("train_images", "train_labels"), "val": ("val_images", "val_labels")}),
+])
+def test_layout_finds_folders_with_other_names(tmp_path, files, expect):
+    root = tmp_path / "ds"
+    for f in files:
+        (_img if f.endswith(".jpg") else _lbl)(root / f)
+    lay = layout.detect(str(root), ai=False)
+    # a standard images/ folder keeps its layout and only gets the label folder; other names are rebuilt by role
+    assert lay.roles_from == "names" and lay.kind == ("flat" if files[0].startswith("images/") else "custom")
+    got = {s.split: (Path(s.img_dir).relative_to(root).as_posix(), Path(s.label_dir).relative_to(root).as_posix())
+           for s in lay.sources}
+    assert got == expect
+    assert all(s.label_dir_exists and s.image_count == 1 and s.label_count == 1 for s in lay.sources)
+
+
+def test_layout_folder_roles_keep_standard_layouts_and_skip_other_formats(tmp_path):
+    # images/ + labels/ never goes through role detection
+    root = tmp_path / "std"
+    _img(root / "images" / "train" / "a.jpg")
+    _lbl(root / "labels" / "train" / "a.txt")
+    assert layout.detect(str(root), ai=False).kind == "ultralytics"
+    # VOC: Annotations/ holds .xml, not YOLO labels — labels/ is created next to JPEGImages/ instead
+    voc = tmp_path / "voc"
+    _img(voc / "JPEGImages" / "a.jpg")
+    (voc / "Annotations").mkdir(parents=True)
+    (voc / "Annotations" / "a.xml").write_text("<annotation/>")
+    lay = layout.detect(str(voc), ai=False)
+    assert lay.kind == "custom" and Path(lay.sources[0].label_dir) == voc / "labels"
+    assert not lay.sources[0].label_dir_exists
+    # the image folder itself was picked: its labels are found in a label-named sibling
+    pick = tmp_path / "pick"
+    _img(pick / "pics" / "a.jpg")
+    _lbl(pick / "yolo_labels" / "a.txt")
+    lay = layout.detect(str(pick / "pics"), ai=False)
+    assert Path(lay.sources[0].label_dir) == pick / "yolo_labels" and lay.sources[0].label_count == 1
+
+
+def test_dir_role_names():
+    assert layout.dir_role("JPEGImages") == ("image", "")
+    assert layout.dir_role("train_imgs") == ("image", "train")
+    assert layout.dir_role("valid-annotations") == ("label", "val")
+    assert layout.dir_role("image_labels")[0] == "label"
+    assert layout.dir_role("weights") == (None, "")
+
+
 def test_matching_and_ap():
     gt = [[0, .5, .5, .2, .2], [0, .2, .2, .1, .1]]
     preds = [[0, .5, .5, .21, .19, .9], [0, .8, .8, .1, .1, .6], [1, .2, .2, .1, .1, .7]]
@@ -951,3 +1011,43 @@ def test_compare_does_not_invent_ap_for_predictions_without_confidence(tmp_path)
     assert summaries["plain"]["classes"][0]["ap"] is None and summaries["plain"]["overall"]["precision"] == 0.5
     assert summaries["scored"]["conf_available"] is True and summaries["scored"]["overall"]["map50"] == 1.0
 
+
+
+def test_pasted_class_names_are_read_in_every_common_form(tmp_path):
+    """static/lib/classnames.js: JSON lists and maps, COCO categories, data.yaml names, Python lists, plain lines."""
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    src = Path(__file__).resolve().parents[1] / "static" / "lib" / "classnames.js"
+    (tmp_path / "classnames.mjs").write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    cases = {
+        '["person", "car"]': ["person", "car"],
+        '{"0": "person", "2": "dog"}': ["person", "class_1", "dog"],
+        '{"names": {"0": "person", "1": "car"}}': ["person", "car"],
+        '{"person": 0, "car": 1}': ["person", "car"],
+        '{"categories": [{"id": 1, "name": "person"}, {"id": 2, "name": "car"}]}': ["person", "car"],
+        "['person', 'car',]": ["person", "car"],
+        "{0: 'person', 1: 'car'}": ["person", "car"],
+        "names:\n  0: person\n  1: traffic light": ["person", "traffic light"],
+        "names: [person, car]": ["person", "car"],
+        "- person\n- car": ["person", "car"],
+        "person\ncar\n\ntruck": ["person", "car", "truck"],
+        "person, car": ["person", "car"],
+        "0 person\n1 car": ["person", "car"],
+        '{"foo": "bar"}': None,
+        "[1, 2": None,
+    }
+    script = ("import { parseClassNames } from './classnames.mjs';\n"
+              f"const cases = {json.dumps(list(cases))};\n"
+              "console.log(JSON.stringify(cases.map((c) => parseClassNames(c))));\n")
+    (tmp_path / "run.mjs").write_text(script, encoding="utf-8")
+    out = json.loads(subprocess.run([node, str(tmp_path / "run.mjs")], capture_output=True, text=True, check=True,
+                                    cwd=tmp_path).stdout)
+    for (text, want), got in zip(cases.items(), out):
+        if want is None:
+            assert got["error"] and got["names"] == [], text
+        else:
+            assert got["names"] == want and not got.get("error"), (text, got)

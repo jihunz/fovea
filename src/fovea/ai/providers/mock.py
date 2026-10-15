@@ -210,6 +210,8 @@ class MockProvider(Provider):
         props = schema.get("properties") or {}
         if "filters" in props:
             out = _mock_filters(system, user)
+        elif "sources" in props:
+            out = _mock_folders(user)
         elif "classes" in props:
             out = {"classes": [_mock_name(block) for block in _class_blocks(user)]}
         elif "name" in props:
@@ -312,6 +314,33 @@ def _schema_default(v: dict):
     if (v or {}).get("enum"):
         return v["enum"][0]
     return {"string": "", "number": 0.5, "integer": 0, "boolean": False, "array": [], "object": {}}.get(t, None)
+
+
+_FOLDER_LINE = re.compile(r"^(\S+)\s+images=(\d+) txt=(\d+)")
+
+
+def _mock_folders(user: str) -> dict:
+    """Folder roles from the listing ai/folders.py sends: every folder with images directly inside is an image
+    folder; its labels are the .txt folder sharing the most trailing path parts (imgs/train ↔ anns/train), the split
+    the image folder's last part when it reads like one."""
+    rows = [m.groups() for m in map(_FOLDER_LINE.match, user.splitlines()) if m]
+    imgs = [r for r, n, _t in rows if int(n) > 0]
+    txts = [r for r, _n, t in rows if int(t) > 0]
+
+    def shared(a: str, b: str) -> tuple:
+        pa, pb, head, tail = a.split("/"), b.split("/"), 0, 0
+        while head < min(len(pa), len(pb)) and pa[head] == pb[head]:
+            head += 1
+        while tail < min(len(pa), len(pb)) - head and pa[-1 - tail] == pb[-1 - tail]:
+            tail += 1
+        word = lambda p: next((w for w in re.split(r"[^a-z]+", p.split("/")[-1].lower()) if w in ("train", "val", "test")), "")
+        return (tail, word(a) == word(b), head, len(pa) == len(pb))
+    out = []
+    for r in imgs:
+        lab = max(txts, key=lambda t: (shared(r, t), t == r)) if txts else ""
+        last = r.split("/")[-1].lower()
+        out.append({"split": last if last in ("train", "val", "valid", "test") else "", "images": r, "labels": lab})
+    return {"sources": out, "reason": "mock: folders with images, paired with the closest .txt folder"}
 
 
 def _class_blocks(text: str) -> List[str]:

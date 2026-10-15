@@ -3,6 +3,7 @@
 // (names and AI class cards).
 import { sortSplits } from './home.js';
 import { KIND_COUNT } from './ai.js';
+import { parseClassNames, duplicateNames } from '../lib/classnames.js';
 /** replaceChildren that skips null / false and flattens arrays (DOM replaceChildren would print "null"). */
 const put = (el, ...c) => { el.replaceChildren(...c.flat(Infinity).filter(x => x != null && x !== false && x !== true)); return el; };
 
@@ -686,7 +687,15 @@ async function render(el, { dataset, fovea, refresh }) {
       // title: the whole name on hover where a narrow card clips it
       const inp = h('input', { class: 'input input-sm', value: n, title: n, 'aria-label': `Name of class ${i}`, spellcheck: 'false',
         onInput: (e) => { names[i] = e.target.value; e.target.title = e.target.value; const row = e.target.closest('.class-edit'); if (row) row.classList.toggle('dirty', (ds.classes || [])[i] !== names[i]); setDirty(true); },
-        onKeydown: (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); saveClasses(); } } });
+        onKeydown: (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); saveClasses(); } },
+        // Several names pasted into one field (a JSON list, a names: block, lines): they fill this row and the ones after.
+        onPaste: (e) => {
+          const text = (e.clipboardData || window.clipboardData).getData('text');
+          const r = parseClassNames(text);
+          if (r.error || r.names.length < 2) return;
+          e.preventDefault();
+          applyPastedNames(r.names, i);
+        } });
       const cc = cards[String(i)];
       const hasCard = cc && (cc.description || cc.prompt || cc.include || cc.exclude || (cc.examples || []).length);
       const removable = i === names.length - 1 && boxCount(i) === 0 && i >= 0;
@@ -710,6 +719,7 @@ async function render(el, { dataset, fovea, refresh }) {
       dupesEl,
       h('div', { class: 'row wrap mt-12' },
         h('button', { class: 'btn btn-sm', onClick: () => { names.push(`class_${names.length}`); setDirty(true); renderClasses(); const ins = classesBox.querySelectorAll('.class-edit input'); const last = ins[ins.length - 1]; if (last) { last.focus(); last.select(); } } }, icon('plus', 12), 'Add class'),
+        h('button', { class: 'btn btn-sm', 'data-tip': 'Paste every name at once: JSON (["person", "car"], {"0": "person"}, COCO categories), a data.yaml names: block, or one per line', onClick: openPasteNames }, icon('fileText', 12), 'Paste names'),
         h('span', { class: 'spacer' }), footDyn, saveBtn),
       h('div', { class: 'xs faint mt-8' }, 'Names are saved to the index and used by data.yaml exports. Class cards describe a class for AI providers (prompt, definition, include / exclude, example boxes).'));
     renderClassFoot();
@@ -736,6 +746,41 @@ async function render(el, { dataset, fovea, refresh }) {
   function setDirty(v) {
     dirty = v; persistDraft();
     renderClassFoot();
+  }
+  /** Pasted names replace the list from row `at` on. Classes after them stay while they still have boxes (dropping
+      one would turn its boxes into "Invalid class id"); unused ones at the end go. Nothing is saved until Save. */
+  function applyPastedNames(list, at = 0) {
+    const next = names.slice(0, at).concat(list);
+    for (let i = next.length; i < names.length; i++) next.push(names[i]);
+    while (next.length > at + list.length && boxCount(next.length - 1) === 0) next.pop();
+    const kept = next.length - at - list.length;
+    names = next; setDirty(true); renderClasses();
+    ui.toast(`Pasted ${fmt.plural(list.length, 'class name')}${kept ? ` · ${fmt.plural(kept, 'later class', 'later classes')} kept (still ${kept === 1 ? 'has' : 'have'} boxes)` : ''} — Save names to keep them`);
+  }
+  function openPasteNames() {
+    const area = h('textarea', { class: 'input mono', rows: 10, spellcheck: 'false', style: 'width:100%', 'aria-label': 'Class names',
+      placeholder: '["person", "car", "dog"]\n{"0": "person", "1": "car"}\nnames:\n  0: person\nor one name per line' });
+    const preview = h('div', { class: 'col gap-6', 'aria-live': 'polite' });
+    let parsed = { names: [] }, okBtn;
+    const update = () => {
+      parsed = parseClassNames(area.value);
+      const dupes = duplicateNames(parsed.names);
+      okBtn.disabled = !parsed.names.length || !!parsed.error || dupes.length > 0;
+      if (!area.value.trim()) { put(preview, h('div', { class: 'small faint' }, 'Accepts a JSON list or {id: name} map, {"names": …}, COCO "categories", a data.yaml names: block, a Python list, or names one per line / comma-separated. Class ids follow the order (or the ids given).')); return; }
+      if (parsed.error) { put(preview, h('div', { class: 'small warn-text' }, parsed.error)); return; }
+      const fmtName = { json: 'JSON', yaml: 'YAML', lines: 'one per line', commas: 'comma-separated' }[parsed.format] || '';
+      put(preview,
+        h('div', { class: 'small muted' }, `${fmt.plural(parsed.names.length, 'class', 'classes')}${fmtName ? ` · read as ${fmtName}` : ''}`),
+        h('div', { class: 'row wrap gap-4' }, parsed.names.slice(0, 60).map((n, i) => ui.chip(`${i} ${n}`, { cls: 'outline' })), parsed.names.length > 60 ? h('span', { class: 'small faint' }, `+${parsed.names.length - 60} more`) : null),
+        dupes.length ? h('div', { class: 'small warn-text' }, `Duplicate names: ${dupes.join(', ')}`) : null);
+    };
+    area.addEventListener('input', update);
+    ui.modal({ title: 'Paste class names', size: 'lg', initialFocus: area,
+      body: h('div', { class: 'col gap-12' }, area, preview,
+        h('div', { class: 'xs faint' }, 'Replaces the names from class 0 on. Classes after the pasted ones keep their names while they still have boxes. Review, then Save names.')),
+      footer: (a) => [h('button', { class: 'btn', onClick: () => a.close() }, 'Cancel'),
+        okBtn = h('button', { class: 'btn btn-primary', disabled: true, onClick: () => { a.close(); applyPastedNames(parsed.names, 0); } }, 'Use these names')] });
+    update();
   }
   async function saveClasses() {
     if (!dirty || saving) return;

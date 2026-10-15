@@ -1,5 +1,6 @@
 // Home: dataset registry cards + Add dataset wizard + file browser picker.
 import { thumbPx, trackImage } from '../lib/media.js';
+import { parseClassNames, duplicateNames } from '../lib/classnames.js';
 /** replaceChildren that skips null / false and flattens arrays (DOM replaceChildren would print "null"). */
 const put = (el, ...c) => { el.replaceChildren(...c.flat(Infinity).filter(x => x != null && x !== false && x !== true)); return el; };
 
@@ -294,13 +295,27 @@ export function openAddDataset(prefillPath = '') {
   // One wizard at a time: a second open (double click, a stray key) focuses the one already there.
   if (addDialog && addDialog.backdrop.isConnected) { const i = addDialog.el.querySelector('input'); i && i.focus(); return; }
   const { h, icon, ui, fmt } = F;
-  let detected = null, detectedPath = null, seq = 0, ctrl = null, nameEdited = false, idEdited = false;
+  let detected = null, detectedPath = null, detectedAi = false, seq = 0, ctrl = null, nameEdited = false, idEdited = false;
   const pathInput = h('input', { class: 'input mono', placeholder: '/data/my-dataset  ·  data.yaml  ·  train.txt', value: prefillPath, 'aria-label': 'Dataset path', spellcheck: 'false', autocomplete: 'off' });
   const nameInput = h('input', { class: 'input', placeholder: 'Dataset name', 'aria-label': 'Name', onInput: () => { nameEdited = !!nameInput.value.trim(); syncSlug(); } });
   const idInput = h('input', { class: 'input mono', placeholder: 'dataset-id', 'aria-label': 'ID', spellcheck: 'false', onInput: () => { idEdited = !!idInput.value.trim(); syncSlug(); } });
   const slugHint = h('span', { class: 'hint' });
   const result = h('div', { 'aria-live': 'polite' });
   const detectBtn = h('button', { class: 'btn', onClick: () => detect(true) }, icon('scan', 14), 'Detect');
+  // Optional class names, pasted in any common form (JSON list / map, COCO categories, names: block, lines).
+  const classesArea = h('textarea', { class: 'input mono', rows: 3, spellcheck: 'false', 'aria-label': 'Class names', style: 'width:100%',
+    placeholder: '["person", "car"]  ·  {"0": "person", "1": "car"}  ·  names: block  ·  one per line' });
+  const classesHint = h('div', { class: 'hint' });
+  let pastedClasses = null;
+  function syncClasses() {
+    const r = parseClassNames(classesArea.value), dupes = duplicateNames(r.names);
+    pastedClasses = !r.error && !dupes.length && r.names.length ? r.names : null;
+    classesHint.className = (r.error || dupes.length) ? 'hint warn-text' : 'hint';
+    classesHint.textContent = !classesArea.value.trim() ? 'Optional — overrides names found in data.yaml / classes.txt. Leave empty to use those (or infer them from the labels).'
+      : r.error || (dupes.length ? `Duplicate names: ${dupes.join(', ')}` : `${r.names.length} class${r.names.length === 1 ? '' : 'es'}: ${r.names.slice(0, 12).map((n, i) => `${i} ${n}`).join(' · ')}${r.names.length > 12 ? ' …' : ''}`);
+  }
+  classesArea.addEventListener('input', syncClasses);
+  syncClasses();
   let registerBtn;
   function syncSlug() {
     const typed = idInput.value.trim(), basis = typed || nameInput.value.trim();
@@ -309,10 +324,12 @@ export function openAddDataset(prefillPath = '') {
   }
   syncSlug();
 
-  async function detect(force = false) {
+  /** `ai`: folders not named images/ and labels/ are identified by an AI provider (Settings → AI). Detection while
+      typing never asks one (a half-typed path may be a home folder); Detect, Enter, Browse and Register do. */
+  async function detect(force = false, ai = true) {
     const p = pathInput.value.trim();
     if (!p) { put(result); detected = null; detectedPath = null; registerBtn.disabled = true; return null; }
-    if (!force && p === detectedPath && detected) return detected;
+    if (!force && p === detectedPath && detected && (detectedAi || !ai)) return detected;
     const my = ++seq;
     if (ctrl) ctrl.abort();
     ctrl = new AbortController();
@@ -322,9 +339,9 @@ export function openAddDataset(prefillPath = '') {
     setTimeout(() => { if (my === seq && cancelBtn.isConnected) cancelBtn.hidden = false; }, 2000);
     put(result, h('div', { class: 'row small faint' }, ui.spinner(), h('span', 'Detecting the layout…'), clock, cancelBtn));
     try {
-      const res = await F.api.get('/api/fs/detect', { path: p }, { signal: ctrl.signal });
+      const res = await F.api.get('/api/fs/detect', { path: p, ai: ai ? 1 : 0 }, { signal: ctrl.signal });
       if (my !== seq) return null;
-      detected = res; detectedPath = p;
+      detected = res; detectedPath = p; detectedAi = ai;
       const lay = res.layout;
       // Suggestions follow the latest detection unless the person typed their own.
       if (!nameEdited) nameInput.value = res.suggested_name || '';
@@ -336,6 +353,8 @@ export function openAddDataset(prefillPath = '') {
       put(result, h('div', { class: 'detect-box' },
         h('div', { class: 'row wrap' }, ui.chip(lay.kind, { type: bad && lay.kind !== 'collection' ? 'danger' : 'accent' }), h('span', { class: 'small muted grow' }, LAYOUT_DESC[lay.kind] || ''),
           lay.data_yaml ? ui.chip('data.yaml', { icon: 'fileText' }) : null,
+          lay.roles_from === 'ai' ? ui.chip('Folders found by AI', { icon: 'sparkles', title: [lay.roles_ai && lay.roles_ai.model, lay.roles_ai && lay.roles_ai.reason].filter(Boolean).join(' — ') || null })
+            : lay.roles_from === 'names' ? ui.chip('Folders matched by name', { icon: 'folder' }) : null,
           total ? h('span', { class: 'small strong nowrap' }, `${fmt.num(total)}${capped ? '+' : ''} images`) : null),
         lay.sources.length ? h('div', { class: 'table-scroll' }, h('table', { class: 'table' }, h('thead', h('tr', h('th', 'Split'), h('th', { class: 'num' }, 'Images'), h('th', { class: 'num' }, 'Labels'), h('th', 'Source'))),
           h('tbody', lay.sources.map(s => h('tr', h('td', { class: 'truncate', style: 'max-width:160px', title: s.split || '' }, s.split || h('span', { class: 'faint' }, '—')), h('td', { class: 'num' }, fmt.num(s.image_count) + (s.count_capped ? '+' : '')),
@@ -345,7 +364,7 @@ export function openAddDataset(prefillPath = '') {
           h('span', { class: 'small muted' }, 'This folder holds several datasets. Pick one:'),
           h('div', { class: 'row wrap gap-6' }, lay.candidates.map(c => h('button', { class: 'btn btn-sm', type: 'button', title: c.path_host,
             onClick: () => { pathInput.value = c.path_host; nameEdited = false; idEdited = false; detect(true); } }, icon('folder', 13), c.name))))
-        : bad ? h('div', { class: 'callout danger small' }, icon('alertCircle', 14), h('span', 'No images were found in a layout Fovea knows. Pick the dataset folder (the one with images/ and labels/), its data.yaml, or a train.txt list.'))
+        : bad ? h('div', { class: 'callout danger small' }, icon('alertCircle', 14), h('span', `No images were found in a layout Fovea knows. Pick the dataset folder (the one with images/ and labels/), its data.yaml, or a train.txt list.${detectedAi ? '' : ' Press Detect to let AI identify folders with other names.'}`))
           : lay.classes.length ? h('div', { class: 'row wrap gap-4' }, h('span', { class: 'small muted' }, `Classes (${lay.classes.length}):`), lay.classes.slice(0, 40).map((c, i) => ui.chip(`${i} ${c}`, { cls: 'outline' })), lay.classes.length > 40 ? h('span', { class: 'small faint' }, `+${lay.classes.length - 40} more`) : null)
             : h('div', { class: 'small faint' }, 'No class names found — they will be inferred from the labels (you can name them later in Overview).'),
         (lay.notes || []).map(n => h('div', { class: 'callout small' }, icon('info', 14), h('span', n))),
@@ -360,14 +379,24 @@ export function openAddDataset(prefillPath = '') {
       return null;
     } finally { if (my === seq) { detectBtn.disabled = false; clock.stop(); } }
   }
-  const detectSoon = F.debounce(() => detect(), 700);
+  const detectSoon = F.debounce(() => detect(false, false), 700);
+  /** The folder mapping shown, to tell whether an AI re-detect at Register changed it. */
+  const mapping = (lay) => JSON.stringify((lay.sources || []).map(s => [s.split, s.img_dir, s.label_dir, s.list_file]));
 
   async function register() {
     registerBtn.disabled = true;
     // One click registers: a path typed since the last detection is detected first.
     const p = pathInput.value.trim();
-    const res = (p && p === detectedPath && detected) ? detected : await detect(true);
+    const shown = p && p === detectedPath && detected ? detected : null;
+    const res = shown && detectedAi ? shown : await detect(true);
     if (!res || res.layout.kind === 'unknown' || !res.layout.sources.length) { registerBtn.disabled = !res; return; }
+    // Typing showed a name-only guess; the AI check found other folders: show those before anything is registered.
+    if (shown && shown !== res && mapping(shown.layout) !== mapping(res.layout)) {
+      ui.toast('AI found a different folder layout — check it, then register');
+      registerBtn.disabled = false;
+      return;
+    }
+    if (classesArea.value.trim() && !pastedClasses) { ui.toast('Fix the class names or clear them', { type: 'error' }); classesArea.focus(); registerBtn.disabled = false; return; }
     const lay = res.layout;
     const total = lay.sources.reduce((n, s) => n + (s.image_count || 0), 0);
     const capped = lay.sources.some(s => s.count_capped);
@@ -377,7 +406,7 @@ export function openAddDataset(prefillPath = '') {
         message: `${res.path_host || p} has ${fmt.num(total)}${capped ? '+' : ''} images in its subfolders and no labels. Fovea will index all of them and create a labels/ folder next to them. Pick the dataset's own folder instead if this is a parent folder.` });
       if (!ok) { registerBtn.disabled = false; return; }
     }
-    const body = { path: p, name: nameInput.value.trim() || undefined, id: idInput.value.trim() || undefined };
+    const body = { path: p, name: nameInput.value.trim() || undefined, id: idInput.value.trim() || undefined, classes: pastedClasses || undefined };
     try {
       let r;
       try { r = await F.api.post('/api/datasets', body); }
@@ -410,6 +439,7 @@ export function openAddDataset(prefillPath = '') {
         h('div', { class: 'row' }, pathInput, h('button', { class: 'btn', onClick: async () => { const p = await pickPath({ title: 'Choose dataset folder or file', files: true, start: pathInput.value.trim(), accept: ['.yaml', '.yml', '.txt'] }); if (p) { pathInput.value = p; detect(true); } } }, icon('folderOpen', 14), 'Browse'), detectBtn)),
       result,
       h('div', { class: 'fields cols-2' }, h('div', { class: 'field' }, h('label', { class: 'label' }, 'Name'), nameInput), h('div', { class: 'field' }, h('label', { class: 'label' }, 'ID'), idInput, slugHint)),
+      h('div', { class: 'field' }, h('label', { class: 'label' }, 'Class names', h('span', { class: 'hint' }, '— optional; paste JSON, a data.yaml names: block or one per line')), classesArea, classesHint),
       h('div', { class: 'small faint' }, 'Registering builds a local index (images, labels, boxes, sizes). Nothing is uploaded; image files are never modified.'),
     ),
     footer: (api) => [h('button', { class: 'btn', onClick: () => api.close() }, 'Cancel'),
@@ -429,4 +459,5 @@ function relTo(p, root) {
 const LAYOUT_DESC = {
   yaml: 'Ultralytics data.yaml', ultralytics: 'images/<split> + labels/<split>', 'split-first': '<split>/images + <split>/labels',
   flat: 'images/ + labels/', mixed: 'images and labels in one folder', bare: 'images only (labels/ will be created)', list: 'train.txt image list', collection: 'several datasets in one folder', unknown: 'not recognised',
+  custom: 'image and label folders with other names',
 };

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import unicodedata
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from ..core.layout import detect, slugify
 from ..paths import BrowseNotFound, browse, resolve, to_host
+from ..security import ai_access_allowed
 
 router = APIRouter(prefix="/api/fs", tags=["fs"])
 
@@ -44,9 +45,10 @@ def suggested_name(p) -> str:
 
 
 @router.get("/detect")
-def api_detect(path: str = Query(...)):
+def api_detect(request: Request, path: str = Query(...), ai: int = Query(1)):
+    """`ai=0`: folders with other names than images/ and labels/ are matched by name only (no AI call)."""
     try:
-        lay = detect(path)
+        lay = detect(path, ai=None if ai else False, allow_guarded=ai_access_allowed(request))
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except Exception as e:  # noqa: BLE001
