@@ -129,9 +129,11 @@ def list_datasets():
     return {"datasets": [dataset_public(r) for r in rows if r["status"] != "deleting"]}
 
 
-def _detect_or_http(path: str):
+def _detect_or_http(path: str, request: Optional[Request] = None):
+    from ..security import ai_access_allowed
     try:
-        lay = detect(path, estimate=False)       # the add dialog already showed counts; do not walk the tree again
+        # the add dialog already showed counts; do not walk the tree again (an AI folder answer is cached)
+        lay = detect(path, estimate=False, allow_guarded=request is None or ai_access_allowed(request))
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except Exception as e:  # noqa: BLE001
@@ -170,7 +172,7 @@ def _same_place(lay) -> Optional[dict]:
 
 
 @router.post("")
-def create_dataset(payload: Any = Body(...)):
+def create_dataset(payload: Any = Body(...), request: Request = None):
     payload = _body(payload)
     path = _str_field(payload, "path", required=True)
     if not path:
@@ -182,7 +184,7 @@ def create_dataset(payload: Any = Body(...)):
     if user_classes is not None and (not isinstance(user_classes, list) or not all(isinstance(c, (str, int)) for c in user_classes)):
         raise HTTPException(400, "classes must be a list of names")
     _refuse_fovea_dirs(path=path)
-    lay = _detect_or_http(path)
+    lay = _detect_or_http(path, request)
     _refuse_fovea_dirs(lay)
     if not payload.get("allow_duplicate"):
         dup = _same_place(lay)
@@ -232,7 +234,7 @@ def relocate_dataset(ds_id: str, payload: Any = Body(...), request: Request = No
     if not path:
         raise HTTPException(400, "path is required")
     _refuse_fovea_dirs(path=path)
-    lay = _detect_or_http(path)
+    lay = _detect_or_http(path, request)
     _refuse_fovea_dirs(lay)
     # A scan still writing rows for the old root would race the update below and re-index twice. Economy runs
     # are detached, not cancelled: ids survive the relocation, so their provider batches (and the hours already
@@ -397,14 +399,15 @@ def _purge_dataset(ds_id: str) -> None:
 
 
 @router.post("/{ds_id}/scan")
-def rescan(ds_id: str, payload: Optional[dict] = Body(None)):
+def rescan(ds_id: str, payload: Optional[dict] = Body(None), request: Request = None):
     row = get_dataset_or_404(ds_id)
     active = jobs.active_for(ds_id, "scan")
     if active:
         return {"job": active.to_dict(), "already_running": True}
     if payload and payload.get("redetect"):
         try:
-            lay = detect(row["root"], estimate=False)
+            from ..security import ai_access_allowed
+            lay = detect(row["root"], estimate=False, allow_guarded=request is None or ai_access_allowed(request))
         except Exception as e:  # noqa: BLE001
             raise HTTPException(400, f"Re-detect failed: {e}")
         if lay.sources:

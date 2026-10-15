@@ -161,6 +161,9 @@ export async function render(ctx, fovea) {
     const keepSel = h('select', { class: 'select auto', 'aria-label': 'Models kept in memory', onChange: (e) => saveSettings({ keep_models: Number(e.target.value) }, devState) },
       [1, 2, 3, 4].map(n => h('option', { value: n, selected: n === (s.keep_models || 2) }, `${n} model${n > 1 ? 's' : ''} in memory`)));
     const devState = h('span', { class: 'small muted' }, dev.resolved ? `Using ${dev.resolved}` : dev.reason || '');
+    const rolesState = h('span', { class: 'small muted' });
+    const rolesSel = h('select', { class: 'select auto', 'aria-label': 'How dataset folders are found', onChange: (e) => saveSettings({ folder_roles: e.target.value }, rolesState) },
+      [['ai', 'AI first, then folder names'], ['names', 'Folder names only']].map(([v, t]) => h('option', { value: v, selected: v === (s.folder_roles || 'ai') }, t)));
     const groups = GROUPS.map(([g, label]) => {
       const list = P.providers.filter(p => groupOf(p) === g);
       if (!list.length) return null;
@@ -171,6 +174,7 @@ export async function render(ctx, fovea) {
     put(aiBody,
       remoteSlot,
       row('Local inference', h('div', { class: 'row wrap' }, devSel, keepSel, devState), h('span', { class: 'hint' }, 'Where YOLO, YOLOE and SAM run. Automatic picks the fastest device available; more models in memory switch faster but use more RAM.')),
+      row('Find dataset folders', h('div', { class: 'row wrap' }, rolesSel, rolesState), h('span', { class: 'hint' }, 'When a dataset’s folders are not called images/ and labels/ (imgs/ + annotations/, train_images/ …), the first AI provider that can write text reads the folder names and file counts — never images or labels — and says which hold the images and labels. Without one, or with “Folder names only”, common names are matched.')),
       h('div', { class: 'mt-12' }, ...groups),
       totals,
       h('div', { class: 'xs faint mt-8' }, `Prices as of ${P.prices_as_of || 'unknown'} · batch, audit and benchmark runs show an estimate first; a reached spend cap blocks every cloud call · keys are stored on this server only and are never sent back to the browser.`));

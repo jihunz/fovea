@@ -67,7 +67,7 @@ docker compose up --build -d           # http://localhost:8888
 ## 화면별 기능
 
 ### Home · Add dataset
-폴더, `data.yaml`, `train.txt` 중 아무거나 지정하면 입력하는 동안 레이아웃을 감지해 분할별 이미지·라벨 폴더를 미리 보여 줍니다. 지원 레이아웃: `images/<split>`+`labels/<split>`, `<split>/images`+`labels`, `images/`+`labels/`, 이미지와 txt가 섞인 폴더, 라벨 없는 폴더(라벨 폴더 자동 생성), `data.yaml`(Roboflow `../train/images` 경로 포함), `train.txt`, CVAT YOLO 1.1 내보내기. 분할은 train, val, test, 그다음 나머지(자연 정렬) 순서로 표시됩니다. 여러 데이터셋이 든 폴더를 지정하면 그중 하나를 고르는 버튼이 나옵니다. 버튼은 경로 칸만 바꾸므로 고른 뒤 **Register & index**를 누르고, 데이터셋마다 반복합니다. 이미 등록된 폴더는 *Open “이름”* / *Register anyway* 선택지로 안내합니다. 첫 인덱싱을 취소하면 *Partial index* 상태가 되고 **Resume indexing**으로 이어서 합니다.
+폴더, `data.yaml`, `train.txt` 중 아무거나 지정하면 입력하는 동안 레이아웃을 감지해 분할별 이미지·라벨 폴더를 미리 보여 줍니다. 지원 레이아웃: `images/<split>`+`labels/<split>`, `<split>/images`+`labels`, `images/`+`labels/`, 이미지와 txt가 섞인 폴더, 라벨 없는 폴더(라벨 폴더 자동 생성), `data.yaml`(Roboflow `../train/images` 경로 포함), `train.txt`, CVAT YOLO 1.1 내보내기. 폴더 이름이 `images/`·`labels/`가 아니면(`imgs/`+`annotations/`, `train_images/`+`train_labels/`, `<split>/JPEGImages` 등) 텍스트를 쓸 수 있는 AI 공급자가 폴더 목록(폴더 이름·파일 개수·예시 파일명 3개, 이미지·라벨 내용은 보내지 않음)을 보고 이미지·라벨 폴더를 찾습니다(**Settings → AI → Find dataset folders**, 기본값). 공급자가 없거나 답이 목록과 맞지 않으면 관례적인 폴더 이름(`imgs`, `photos`, `frames`, `annotations`, `anns`, `gt`, `yolo_labels` …)으로 찾습니다. 입력하는 동안의 자동 감지는 폴더 이름만 쓰고, **Detect**·Enter·Browse·Register 때 AI에 묻습니다. `.xml`/`.json`만 있는 폴더(VOC·COCO)는 라벨 폴더로 쓰지 않고 옆에 `labels/`를 만듭니다. **Class names** 칸(선택)에 JSON(`["person", "car"]`, `{"0": "person"}`, `{"names": …}`, COCO `categories`), `data.yaml`의 `names:` 블록, 한 줄에 하나씩 붙여 넣으면 감지된 이름 대신 씁니다. 분할은 train, val, test, 그다음 나머지(자연 정렬) 순서로 표시됩니다. 여러 데이터셋이 든 폴더를 지정하면 그중 하나를 고르는 버튼이 나옵니다. 버튼은 경로 칸만 바꾸므로 고른 뒤 **Register & index**를 누르고, 데이터셋마다 반복합니다. 이미 등록된 폴더는 *Open “이름”* / *Register anyway* 선택지로 안내합니다. 첫 인덱싱을 취소하면 *Partial index* 상태가 되고 **Resume indexing**으로 이어서 합니다.
 
 **폴더를 옮겼을 때**: 데이터셋 폴더를 옮겼거나, 드라이브 이름이 바뀌었거나, 다른 PC·Docker에서 만든 인덱스라 파일을 찾지 못하면 데이터셋 화면에 *These files are not on this machine*이 뜹니다. 그 안내나 Home·데이터셋 메뉴의 **Move to a new path…**로 새 위치(폴더, `data.yaml`, `train.txt`)를 지정하면 같은 데이터셋으로 다시 인덱싱합니다. 데이터셋 ID와 **이미지 ID가 그대로 유지**되므로 리뷰 표시, AI 제안과 감사 소견, 데이터 품질 플래그, 스냅샷, 클래스 카드의 예시 박스, 작업 묶음(`?set=`)이 모두 따라옵니다. 레이아웃이 달라져 상대 경로가 바뀐 파일도 리뷰 표시와 같은 규칙으로 짝을 찾아 옮깁니다. 기다리던 Economy 배치는 끊지 않고, 다시 인덱싱이 끝나면 이어서 결과를 받습니다.
 
@@ -78,7 +78,7 @@ docker compose up --build -d           # http://localhost:8888
 - **AI label audit**: 마지막 라벨 감사의 결과(빠진 객체·느슨한 박스·클래스 뒤바뀜·근거 없는 박스)와 가장 의심스러운 이미지 목록. **Review … suspect images**는 Explore를 의심 점수 순으로 엽니다.
 - **History**: 라벨 버전(스냅샷) 목록, 버전별 변경 내역(이미지별 박스 수, 클래스별 +/−), 전체 또는 이미지 단위 **Restore**(AI 제안 일괄 수락을 되돌리면 그 제안도 다시 대기 상태로), **Save version**. 보관 개수와 Restore·Undo의 차이는 아래 [라벨 파일 안전](#라벨-파일-안전).
 - **Dataset**: 루트와 분할별 폴더, `data.yaml` 쓰기/갱신(주석 유지, `data.yaml.bak` 백업), 마지막 인덱싱 보고서(접힌 상태 — 문제 종류별 개수와 예시 최대 5개, 예: 이미지 폴더가 없는 라벨 폴더), **Dataset card**(`DATASET_CARD.md` 다운로드).
-- **Classes**: 클래스 이름 편집(중복 검사, 저장 전 초안 유지), 클래스마다 **Examples**(Objects에서 그 클래스의 박스 전체 보기)와 **Card**(AI에 주는 프롬프트·정의·포함/제외 기준·예시 박스). 이름이 `class_0`처럼 비어 있는 데이터셋에는 **Suggest names with AI**가 강조됩니다.
+- **Classes**: 클래스 이름 편집(중복 검사, 저장 전 초안 유지), **Paste names**로 이름 전체를 JSON·`names:` 블록·줄 단위로 한 번에 붙여넣기(이름 칸에 여러 이름을 붙여 넣어도 그 행부터 채움), 클래스마다 **Examples**(Objects에서 그 클래스의 박스 전체 보기)와 **Card**(AI에 주는 프롬프트·정의·포함/제외 기준·예시 박스). 이름이 `class_0`처럼 비어 있는 데이터셋에는 **Suggest names with AI**가 강조됩니다.
 - 분포 차트: 클래스 분포, 분할별 통계, 이미지당 박스 수, 박스 크기·종횡비, 박스 중심 히트맵, 해상도.
 
 ### Explore

@@ -2112,3 +2112,62 @@ def test_cloud_estimate_counts_parallel_requests(client, ds):
     assert e["seconds_per_image"] == pytest.approx(0.025)
     e = client.post("/api/ai/estimate", json={**body, "image_ids": ids, "concurrency": 1}).json()
     assert e["seconds_per_image"] == pytest.approx(0.05)
+
+
+def test_add_dialog_finds_renamed_folders_with_ai_and_falls_back_to_names(client, tmp_path):
+    """imgs/<split> + anns/<split>: detection asks the AI provider (the mock here) by default, the answer is checked
+    against the listing, registering indexes the labels from anns/, and with AI off the folder names still match."""
+    from fovea.ai import folders
+    folders.clear_cache()
+    root = tmp_path / f"renamed-{uuid.uuid4().hex[:6]}"
+    for split, k in (("train", 3), ("val", 2)):
+        for i in range(k):
+            _scene(root / "pics" / split / f"{split}_{i}.jpg", (160, 120), [(0.5, 0.5, 0.3, 0.3)])
+            lp = root / "anns" / split / f"{split}_{i}.txt"
+            lp.parent.mkdir(parents=True, exist_ok=True)
+            lp.write_text("0 0.5 0.5 0.3 0.3\n")
+    r = client.get("/api/fs/detect", params={"path": str(root)})
+    assert r.status_code == 200, r.text
+    lay = r.json()["layout"]
+    assert lay["kind"] == "custom" and lay["roles_from"] == "ai" and lay["roles_ai"]["provider"] == "mock"
+    got = {s["split"]: (Path(s["img_dir"]).relative_to(root).as_posix(), Path(s["label_dir"]).relative_to(root).as_posix(),
+                        s["label_count"]) for s in lay["sources"]}
+    assert got == {"train": ("pics/train", "anns/train", 3), "val": ("pics/val", "anns/val", 2)}
+    # ai=0 (typing in the dialog) never asks a provider: the names match the same folders
+    lay0 = client.get("/api/fs/detect", params={"path": str(root), "ai": 0}).json()["layout"]
+    assert lay0["roles_from"] == "names" and len(lay0["sources"]) == 2
+    # registering with pasted class names indexes the labels found in anns/
+    r = client.post("/api/datasets", json={"path": str(root), "classes": ["thing"]})
+    assert r.status_code == 200, r.text
+    ds_id = r.json()["dataset"]["id"]
+    try:
+        _wait(r.json()["job"]["id"])
+        n = db.query_one("SELECT COUNT(*) AS n FROM images WHERE dataset_id=? AND has_label=1", (ds_id,))["n"]
+        assert n == 5
+        assert db.loads(db.query_one("SELECT classes FROM datasets WHERE id=?", (ds_id,))["classes"]) == ["thing"]
+    finally:
+        client.delete(f"/api/datasets/{ds_id}")
+    # Settings → "Folder names only": no provider is asked
+    assert client.put("/api/ai/settings", json={"folder_roles": "names"}).status_code == 200
+    try:
+        folders.clear_cache()
+        lay2 = client.get("/api/fs/detect", params={"path": str(root)}).json()["layout"]
+        assert lay2["roles_from"] == "names" and not lay2["roles_ai"]
+    finally:
+        client.put("/api/ai/settings", json={"folder_roles": "ai"})
+    assert client.put("/api/ai/settings", json={"folder_roles": "magic"}).status_code == 422
+
+
+def test_ai_folder_answers_are_checked_against_the_listing(tmp_path):
+    from fovea.ai import folders
+    from fovea.core.layout import folder_inventory
+    root = tmp_path / "ds"
+    _scene(root / "imgs" / "a.jpg", (64, 48), [])
+    (root / "xml").mkdir()
+    (root / "xml" / "a.xml").write_text("<annotation/>")
+    inv = folder_inventory(root)
+    raw = {"sources": [{"split": "", "images": "imgs", "labels": "xml"},          # .xml only: not YOLO labels
+                       {"split": "", "images": "../etc", "labels": ""},           # outside the dataset
+                       {"split": "", "images": "nowhere", "labels": ""}]}         # not in the listing
+    pairs = folders.validate(root, inv, raw)
+    assert [(Path(i).name, Path(l).name) for _s, i, l, _r in pairs] == [("imgs", "labels")]

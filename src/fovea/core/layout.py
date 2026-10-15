@@ -10,6 +10,8 @@ Supported layouts
 * ``bare``        : folder of images without labels (labels/ will be created on save)
 * ``list``        : a train.txt style list of image paths (labels via images->labels rule)
 * ``collection``  : a folder holding several datasets — nothing is registered; ``candidates`` lists them
+* ``custom``      : image / label folders with other names (imgs/ + annotations/, train_images/ …) — found by an AI
+                    provider reading the folder listing (the default, ai/folders.py), else by conventional names
 """
 from __future__ import annotations
 
@@ -101,6 +103,8 @@ class Layout:
     classes_from: str = ""                                    # 'yaml' | 'file' | '' (where `classes` came from)
     candidates: List[dict] = field(default_factory=list)      # kind 'collection': [{name, path_host, kind}]
     unmatched_labels: List[dict] = field(default_factory=list)  # label folders no source uses: [{path_host, files}]
+    roles_from: str = ""                                      # kind 'custom': 'ai' | 'names' (how folders were found)
+    roles_ai: Optional[dict] = None                           # {provider, model, reason} when an AI provider found them
 
     def to_dict(self) -> dict:
         return {
@@ -109,6 +113,7 @@ class Layout:
             "data_yaml": self.data_yaml, "data_yaml_host": to_host(self.data_yaml) if self.data_yaml else None,
             "classes": self.classes, "notes": self.notes, "classes_from": self.classes_from,
             "candidates": self.candidates, "unmatched_labels": self.unmatched_labels,
+            "roles_from": self.roles_from, "roles_ai": self.roles_ai,
         }
 
     @staticmethod
@@ -124,7 +129,8 @@ class Layout:
         return Layout(kind=d.get("kind", "unknown"), root=d.get("root", ""), sources=srcs,
                       data_yaml=d.get("data_yaml"), classes=list(d.get("classes", [])), notes=list(d.get("notes", [])),
                       classes_from=d.get("classes_from", ""), candidates=list(d.get("candidates", [])),
-                      unmatched_labels=list(d.get("unmatched_labels", [])))
+                      unmatched_labels=list(d.get("unmatched_labels", [])), roles_from=d.get("roles_from", ""),
+                      roles_ai=d.get("roles_ai"))
 
 
 # --------------------------------------------------------------------------- helpers
@@ -531,13 +537,342 @@ def find_unmatched_labels(lay: Layout, seconds: float = 5.0) -> List[dict]:
     return probe.unmatched_labels
 
 
-def detect(raw: str, estimate: bool = True, _depth: int = 0) -> Layout:
+# --------------------------------------------------------------------------- folder roles (other folder names)
+# A tree that does not call its folders images/ and labels/ (imgs/ + annotations/, train_images/ + train_labels/,
+# <split>/JPEGImages …) is mapped by role: an AI provider reads the folder listing (ai/folders.py, the default), and
+# when none is available or its answer does not check out, these conventional names are matched instead.
+
+IMAGE_DIR_NAMES = {"images", "image", "imgs", "img", "jpegimages", "jpeg", "jpg", "jpgs", "png", "pngs", "pictures",
+                   "picture", "pics", "pic", "photos", "photo", "frames", "frame", "rgb"}
+LABEL_DIR_NAMES = {"labels", "label", "annotations", "annotation", "annots", "annot", "anns", "ann", "yolo",
+                   "yololabels", "labelsyolo", "yolotxt", "txt", "gt", "groundtruth", "bboxes", "bbox", "boxes",
+                   "targets", "target"}
+_NOT_LABELS = {"classes.txt", "labels.txt", "obj.names", "readme.txt", "license.txt", "train.txt", "val.txt",
+               "valid.txt", "test.txt", "requirements.txt", "notes.txt"}
+_TOKEN = re.compile(r"[^a-z0-9]+")
+INVENTORY_MAX_DIRS = 400
+INVENTORY_MAX_DEPTH = 4
+
+
+def dir_role(name: str) -> tuple:
+    """('image' | 'label' | None, split) of a folder name: 'imgs' → image, 'train_labels' → (label, 'train'),
+    'JPEGImages' → image. A name with both words is what its last one says ('image_labels' → label)."""
+    toks = [t for t in _TOKEN.split((name or "").lower()) if t]
+    key = "".join(toks)
+    split = next((norm_split(t) for t in toks if is_split_name(t)), "")
+    if key in IMAGE_DIR_NAMES:
+        return "image", split
+    if key in LABEL_DIR_NAMES:
+        return "label", split
+    for t in reversed(toks):
+        if t in LABEL_DIR_NAMES:
+            return "label", split
+        if t in IMAGE_DIR_NAMES:
+            return "image", split
+    return None, split
+
+
+@dataclass
+class DirInfo:
+    rel: str                     # posix path below the root, '.' for the root itself
+    path: Path
+    depth: int
+    images: int = 0              # directly inside
+    txt: int = 0                 # label-like .txt directly inside
+    other: dict = field(default_factory=dict)   # {'.xml': n, '.json': n} — other annotation formats
+    sample: List[str] = field(default_factory=list)
+    tree_images: int = 0         # in this folder and below
+    tree_txt: int = 0
+    img_stems: set = field(default_factory=set)  # a few image / label file stems, to tell which labels belong where
+    txt_stems: set = field(default_factory=set)
+
+
+def folder_inventory(root: Path, max_dirs: int = INVENTORY_MAX_DIRS, max_depth: int = INVENTORY_MAX_DEPTH,
+                     seconds: float = 3.0) -> List[DirInfo]:
+    """The folders under `root` (hidden ones skipped, symlinks not followed, bounded in count, depth and time) with
+    what each holds — what an AI provider is shown, and what the name fallback reads."""
+    out: List[DirInfo] = []
+    by_path = {}
+    seen = set()
+    deadline = time.monotonic() + seconds
+    for cur, dirs, files in os.walk(root, followlinks=True):   # linked split folders are the user's data
+        try:
+            st = os.stat(cur)
+        except OSError:
+            dirs[:] = []
+            continue
+        if (st.st_dev, st.st_ino) in seen:                       # a link back to a folder already listed: a loop
+            dirs[:] = []
+            continue
+        seen.add((st.st_dev, st.st_ino))
+        rel = os.path.relpath(cur, root)
+        depth = 0 if rel == "." else rel.count(os.sep) + 1
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__pycache__") if depth < max_depth else []
+        d = DirInfo(rel=Path(rel).as_posix(), path=Path(cur), depth=depth)
+        for f in files:
+            if f.startswith("."):
+                continue
+            dot = f.rfind(".")
+            ext = f[dot:].lower() if dot > 0 else ""
+            if ext in IMAGE_EXTS:
+                d.images += 1
+            elif ext == LABEL_EXT and f.lower() not in _NOT_LABELS:
+                d.txt += 1
+            elif ext in (".xml", ".json"):
+                d.other[ext] = d.other.get(ext, 0) + 1
+            else:
+                continue
+            if len(d.sample) < 3:
+                d.sample.append(f)
+            if ext in IMAGE_EXTS and len(d.img_stems) < 200:
+                d.img_stems.add(f[:dot])
+            elif ext == LABEL_EXT and len(d.txt_stems) < 200:
+                d.txt_stems.add(f[:dot])
+        out.append(d)
+        by_path[cur] = d
+        if len(out) >= max_dirs or time.monotonic() > deadline:
+            break
+    for d in out:                                    # roll the counts up to every ancestor that was listed
+        up = d.path
+        while True:
+            a = by_path.get(str(up))
+            if a is not None:
+                a.tree_images += d.images
+                a.tree_txt += d.txt
+            if str(up) == str(root) or up.parent == up:
+                break
+            up = up.parent
+    return out
+
+
+def inventory_lines(inv: List[DirInfo], limit: int = 200) -> List[str]:
+    """The listing sent to an AI provider: only folders that hold (or lead to) images or annotation files."""
+    lines = []
+    for d in inv:
+        if not (d.tree_images or d.tree_txt or d.other):
+            continue
+        extra = "".join(f" {k[1:]}={v}" for k, v in sorted(d.other.items()))
+        eg = f"  e.g. {', '.join(d.sample)}" if d.sample else ""
+        lines.append(f"{d.rel}  images={d.images} txt={d.txt}{extra}  (below: images={d.tree_images} txt={d.tree_txt}){eg}")
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def default_label_dir(img_dir: Path, root: Path) -> Path:
+    """Where labels of an image folder that has none yet are written: its image-named component swapped for
+    'labels' (imgs/train → labels/train), else a labels/ folder inside it (as for a bare folder)."""
+    try:
+        rel = img_dir.relative_to(root).parts
+    except ValueError:
+        rel = ()
+    for i in range(len(rel) - 1, -1, -1):
+        if dir_role(rel[i])[0] == "image":
+            parts = list(rel)
+            parts[i] = "labels"
+            return root.joinpath(*parts)
+    return img_dir / "labels"
+
+
+def _overlap(a: set, b: set) -> int:
+    return len(a & b)
+
+
+def _best_label_dir(img: DirInfo, cands: List[DirInfo], split: str = "") -> Optional[DirInfo]:
+    """The label-named folder with .txt files that best fits `img`: same split word, shared file stems, most files."""
+    ok = [c for c in cands if c.tree_txt > 0]
+    if not ok:
+        return None
+    return max(ok, key=lambda c: (dir_role(c.path.name)[1] == split and bool(split),
+                                  _overlap(c.txt_stems, img.img_stems), c.tree_txt))
+
+
+def roles_by_names(root: Path, inv: List[DirInfo]) -> List[tuple]:
+    """[(split, img_dir, label_dir, recursive)] from conventional folder names, or [] when no folder is image-named."""
+    by_rel = {d.rel: d for d in inv}
+
+    def kids(d: DirInfo) -> List[DirInfo]:
+        pre = "" if d.rel == "." else d.rel + "/"
+        return [c for c in inv if c.depth == d.depth + 1 and c.rel.startswith(pre)]
+
+    imgs = [d for d in inv if d.rel != "." and d.tree_images > 0 and dir_role(d.path.name)[0] == "image"]
+    imgs = [d for d in imgs if not any(o is not d and d.rel.startswith(o.rel + "/") for o in imgs)]   # topmost only
+    out = []
+    for I in imgs:
+        parent = by_rel.get(Path(I.rel).parent.as_posix()) or by_rel.get(".")
+        sib_labels = [c for c in kids(parent) if dir_role(c.path.name)[0] == "label"] if parent else []
+        role_split = dir_role(I.path.name)[1]
+        split_kids = [c for c in kids(I) if is_split_name(c.path.name) and c.tree_images > 0]
+        if split_kids:
+            L = _best_label_dir(I, sib_labels)
+            for S in split_kids:
+                lab = by_rel.get(f"{L.rel}/{S.path.name}") if L else None
+                out.append((norm_split(S.path.name), S.path, lab.path if lab else (L.path / S.path.name if L else
+                            default_label_dir(S.path, root)), True))
+            if I.images:
+                out.append(("", I.path, L.path if L else default_label_dir(I.path, root), False))
+            continue
+        if parent and parent.rel != ".":
+            split = norm_split(parent.path.name) if is_split_name(parent.path.name) else (role_split or parent.path.name)
+        else:
+            split = role_split
+        if I.txt and _overlap(I.img_stems, I.txt_stems):
+            out.append((split, I.path, I.path, True))                       # labels beside the images
+            continue
+        L = _best_label_dir(I, sib_labels, role_split)
+        out.append((split, I.path, L.path if L else default_label_dir(I.path, root), True))
+    return out
+
+
+def layout_from_roles(root: Path, pairs: List[tuple], estimate: bool, how: str) -> Layout:
+    lay = Layout(kind="custom", root=str(root), roles_from=how)
+    for split, img, lab, recursive in pairs:
+        lay.sources.append(_mk_dir_source(split, Path(img), Path(lab), estimate=estimate, recursive=recursive))
+
+    def rel(p: str) -> str:
+        try:
+            r = Path(p).relative_to(root).as_posix()
+        except ValueError:
+            return p
+        return (r if r != "." else Path(p).name) + "/"
+    shown = ", ".join(f"{rel(s.img_dir)} → {rel(s.label_dir)}{'' if s.label_dir_exists else ' (new)'}"
+                      for s in lay.sources[:4]) + (" …" if len(lay.sources) > 4 else "")
+    lay.notes.append(f"Folders found {'by AI' if how == 'ai' else 'by their names'}: {shown}")
+    return lay
+
+
+def _needs_roles(lay: Layout) -> str:
+    """Did the images/ + labels/ rules miss this tree? 'rebuild': nothing found, or images below the folder (in imgs/,
+    photos/train …) indexed as one split-less pile. 'labels': the image folders are right but their labels/ is missing
+    while .txt files sit elsewhere (images/ + annotations/) — only the label folders are re-pointed. '': neither."""
+    if lay.kind in ("yaml", "list", "collection", "mixed", "custom"):
+        return ""
+    if lay.kind == "unknown":
+        return "rebuild"
+    srcs = [s for s in lay.sources if not s.list_file]
+    if not srcs:
+        return ""
+    root = Path(lay.root)
+    if lay.kind == "bare" and not has_images_shallow(root):
+        return "rebuild"
+    if any(not s.label_dir_exists for s in srcs) and _stray_txt(root, max_dirs=200) > 0:
+        return "rebuild" if lay.kind == "bare" else "labels"
+    return ""
+
+
+def _repoint_labels(lay: Layout, pairs: List[tuple]) -> bool:
+    """Give sources whose label folder is missing the existing label folder `pairs` name for the same images
+    (or for their parent, as <labels>/<split>). The image sources themselves — linked splits, loose images — stay."""
+    by_img = {os.path.normpath(str(img)): Path(lab) for _s, img, lab, _r in pairs}
+    changed = []
+    for s in lay.sources:
+        if s.list_file or s.label_dir_exists or not s.img_dir:
+            continue
+        img = os.path.normpath(s.img_dir)
+        lab = by_img.get(img)
+        if lab is None and os.path.dirname(img) in by_img:      # images/ was paired as a whole: labels go per split
+            lab = by_img[os.path.dirname(img)] / os.path.basename(img)
+        if lab is None or not lab.is_dir() or os.path.normpath(str(lab)) == img:
+            continue
+        s.label_dir, s.label_dir_exists = str(lab), True
+        s.label_count = count_labels(lab, recursive=s.recursive) if s.image_count is not None else None
+        changed.append(s)
+    return bool(changed)
+
+
+def _sibling_labels(lay: Layout) -> None:
+    """The image folder itself was picked (…/imgs) and its labels sit in a label-named sibling (…/annotations)."""
+    for s in lay.sources:
+        if s.list_file or s.label_dir_exists or not s.img_dir:
+            continue
+        img = Path(s.img_dir)
+        me = DirInfo(rel=img.name, path=img, depth=1)
+        try:
+            with os.scandir(img) as it:
+                me.img_stems = {e.name.rsplit(".", 1)[0] for _, e in zip(range(200), it) if e.is_file() and is_image(e)}
+        except OSError:
+            continue
+        cands = []
+        for c in _subdirs(img.parent):
+            if c == img or dir_role(c.name)[0] != "label":
+                continue
+            d = DirInfo(rel=c.name, path=c, depth=1)
+            try:
+                with os.scandir(c) as it:
+                    names = [e.name for _, e in zip(range(2000), it) if e.name.lower().endswith(LABEL_EXT)]
+            except OSError:
+                continue
+            d.tree_txt, d.txt_stems = len(names), {n[:-len(LABEL_EXT)] for n in names[:200]}
+            cands.append(d)
+        best = _best_label_dir(me, cands, dir_role(img.name)[1])
+        if best is not None and _overlap(best.txt_stems, me.img_stems):
+            s.label_dir, s.label_dir_exists = str(best.path), True
+            s.label_count = count_labels(best.path, recursive=s.recursive) if s.image_count is not None else None
+            lay.kind = "flat"
+            lay.notes = [n for n in lay.notes if "No labels found" not in n]
+            lay.notes.append(f"Labels found in the sibling folder {best.path.name}/")
+
+
+def resolve_roles(lay: Layout, estimate: bool, ai: Optional[bool], allow_guarded: bool = True) -> Layout:
+    """`lay` re-mapped by folder role when the standard rules missed the tree (see _needs_roles); else `lay`.
+    `ai`: None = the Settings choice (AI by default), False = conventional names only."""
+    if lay.kind == "bare" and has_images_shallow(Path(lay.root)):
+        _sibling_labels(lay)
+    need = _needs_roles(lay)
+    if not need:
+        return lay
+    root = Path(lay.root)
+    inv = folder_inventory(root)
+    pairs, how, info, why = [], "", None, ""
+    if ai is not False:
+        from ..ai import folders as ai_folders            # lazy: the core layer does not load the AI stack up front
+        try:
+            res = ai_folders.find_roles(root, inv, use_setting=ai is None, allow_guarded=allow_guarded)
+        except Exception as e:  # noqa: BLE001 — never let a provider failure break detection; names take over
+            res, why = None, str(e)
+        if res and res.get("pairs"):
+            pairs, how, info = res["pairs"], "ai", {k: res.get(k) for k in ("provider", "model", "reason")}
+        elif res:
+            why = res.get("why") or ""
+    if not pairs:
+        pairs = roles_by_names(root, inv)
+        how = "names" if pairs else ""
+    if need == "labels":
+        if pairs and _repoint_labels(lay, pairs):
+            lay.roles_from, lay.roles_ai = how, info
+            shown = ", ".join(sorted({Path(s.label_dir).relative_to(root).as_posix() + "/" for s in lay.sources
+                                      if s.label_dir_exists and _within(s.label_dir, str(root))}))
+            lay.notes.append(f"Labels found {'by AI' if how == 'ai' else 'by folder name'} in {shown}")
+        return lay
+    if not pairs:
+        if why:
+            lay.notes.append(f"AI folder detection: {why}")
+        return lay
+    out = layout_from_roles(root, pairs, estimate, how)
+    out.roles_ai = info
+    if how == "names" and why:
+        out.notes.append(f"AI folder detection did not answer ({why}) — matched by folder names instead")
+    out.classes, out.classes_from = lay.classes, lay.classes_from
+    out.data_yaml = lay.data_yaml
+    out.notes += [n for n in lay.notes if "No labels found" not in n and "were not used as labels" not in n
+                  and "No images" not in n]
+    if not any(s.label_dir_exists for s in out.sources):
+        out.notes.append("No labels found — label files will be created when you annotate")
+    return out
+
+
+def detect(raw: str, estimate: bool = True, _depth: int = 0, ai: Optional[bool] = None,
+           allow_guarded: bool = True) -> Layout:
+    """`ai`: how folders with other names than images/ and labels/ are found — None follows Settings (an AI provider
+    by default, conventional names when none answers), False uses the names only. `allow_guarded`: False when the
+    request may not reach a cloud provider (another machine)."""
     if _depth == 0:
         _budget.deadline = time.monotonic() + (ESTIMATE_SECONDS if estimate else 10.0)
         _budget.capped = False
     try:
         lay = _detect(raw, estimate, _depth)
         if _depth == 0:
+            lay = resolve_roles(lay, estimate, ai, allow_guarded)
             lay.sources = sort_sources(lay.sources)
             _budget.deadline = max(_budget.deadline, time.monotonic() + 2.0)   # orphan-label counts stay bounded too
             _unmatched_label_dirs(lay)

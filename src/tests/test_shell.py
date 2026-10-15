@@ -132,7 +132,10 @@ def node_out(tmp_path_factory):
     kinds = re.search(r"^export const KIND_COUNT = \{.*?\};", (STATIC / "views" / "ai.js").read_text(encoding="utf-8"), re.M).group(0)
     (d / "views" / "ai.mjs").write_text(kinds + "\n", encoding="utf-8")
     ov = (STATIC / "views" / "overview.js").read_text(encoding="utf-8").replace("'./home.js'", "'./home.mjs'").replace("'./ai.js'", "'./ai.mjs'")
+    ov = ov.replace("'../lib/classnames.js'", "'../lib/classnames.mjs'")      # pure: used as is
     (d / "views" / "overview.mjs").write_text(ov, encoding="utf-8")
+    (d / "lib").mkdir()
+    (d / "lib" / "classnames.mjs").write_text((STATIC / "lib" / "classnames.js").read_text(encoding="utf-8"), encoding="utf-8")
     (d / "run.mjs").write_text(SCENARIOS, encoding="utf-8")
     r = subprocess.run([NODE, str(d / "run.mjs")], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
