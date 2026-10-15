@@ -516,7 +516,9 @@ class BatchSink:
 
     def apply(self, iid: int, img: dict, out: dict) -> None:
         ds_id, run_id, target, stats = self.ds_id, self.run_id, self.target, self.stats
-        preds = out["preds"]
+        preds, n_reg = store.drop_in_regions(iid, out["preds"])     # never written into an ignored region
+        if n_reg:
+            stats["in_ignored_regions"] = int(stats.get("in_ignored_regions") or 0) + n_reg
         if target == "proposals":
             preds, n_rej = store.drop_rejected(iid, preds)     # what the user rejected here stays rejected
             if n_rej:

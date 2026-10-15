@@ -10,6 +10,7 @@
 // are flat (no shimmer); the peek view swaps in only after its frame is decoded; results of an action are
 // reported in a fixed status line, not in toasts.
 import { decodedImage } from '../lib/media.js';
+import { EMPTY as NO_ANN, annSchema, attrFilterText } from '../lib/annattrs.js';
 
 const SIZES = { s: 92, m: 132, l: 188, xl: 260 };
 const SIZE_ORDER = ['s', 'm', 'l', 'xl'];
@@ -25,7 +26,8 @@ const CONCURRENCY = 5;      // crop requests in flight (browsers allow 6 per hos
 const UNDO_DEPTH = 10;      // the server keeps the newest 20 automatic snapshots per dataset
 // Image filters other views may hand over in the URL; kept as removable chips and passed through unchanged.
 // `set` is a working-set token (POST /sets): a frozen list of image ids kept by the server for a while.
-const PASS_KEYS = ['labeled', 'review', 'exclude_review', 'issue', 'seq', 'ids', 'set', 'ai', 'only_cls', 'min_boxes', 'max_boxes', 'has_label'];
+// `attr` narrows the BOXES here (core: a box whose converted attribute has the value), as it does images in Explore.
+const PASS_KEYS = ['labeled', 'review', 'exclude_review', 'issue', 'seq', 'ids', 'set', 'ai', 'only_cls', 'min_boxes', 'max_boxes', 'has_label', 'attr'];
 const SORTS = [['class', 'Class'], ['name', 'Image name'], ['area', 'Area'], ['aspect', 'Aspect ratio'], ['random', 'Random'], ['audit', 'AI suspicion']];
 const SUSPECT = { swap: { glyph: '⇄', label: 'Possibly wrong class' }, loose: { glyph: '⤢', label: 'Loose box' }, spurious: { glyph: '✕', label: 'Box without support' } };
 
@@ -78,6 +80,8 @@ async function render(el, { ctx, dataset, fovea }) {
   const { h, icon, ui, fmt, cls, MOD, keys } = fovea;
   const { classColor, className, textOn } = fovea.colors;
   const ds = dataset;
+  let annSch = NO_ANN;
+  annSchema(fovea.api, ds).then((sch) => { if (sch !== NO_ANN) { annSch = sch; try { renderChips(); } catch (e) { /* view closed */ } } });
   const names = [...(ds.classes || [])];
   const q0 = ctx.query;
   const api = fovea.api;
@@ -214,6 +218,7 @@ async function render(el, { ctx, dataset, fovea }) {
       case 'set': return setCount != null ? `${fmt.num(setCount)} selected image${setCount === 1 ? '' : 's'}` : 'Selected images';
       case 'ai': return v === 'audit' ? 'AI audit findings' : v === 'pending' ? 'AI proposals pending' : `AI: ${v}`;
       case 'only_cls': return `Only classes ${v}`;
+      case 'attr': return `Boxes with ${attrFilterText(annSch, v)}`;
       default: return `${k}: ${v}`;
     }
   }

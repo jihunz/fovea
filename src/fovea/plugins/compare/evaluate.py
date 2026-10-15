@@ -1036,6 +1036,14 @@ def scope_items(dataset_id: str, filters: dict) -> List[dict]:
     return rows
 
 
+def outside_regions(rows: List[List[float]], regions) -> List[List[float]]:
+    """Boxes whose centre is not inside one of the image's regions that are not objects (ignored regions, DontCare,
+    crowds — core.annindex): as the VisDrone and KITTI protocols do, those areas count neither hits nor misses."""
+    if not regions:
+        return rows
+    return [r for r in rows if not any(abs(r[1] - g[0]) <= g[2] / 2 and abs(r[2] - g[1]) <= g[3] / 2 for g in regions)]
+
+
 def gt_for(ids: Sequence[int]) -> Dict[int, List[List[float]]]:
     out: Dict[int, List[List[float]]] = defaultdict(list)
     for i in range(0, len(ids), 500):
@@ -1096,6 +1104,8 @@ def evaluate(job: Optional[Job], dataset_id: str, items: List[dict], sources: Di
     for start in range(0, total, 500):
         chunk = keep[start:start + 500]
         gts = gt_for([items[i]["id"] for i in chunk])
+        from ...core.annindex import regions_by_image
+        regs = regions_by_image([items[i]["id"] for i in chunk])
         for n, idx in enumerate(chunk):
             k = start + n
             if job and k % 100 == 0:
@@ -1108,7 +1118,7 @@ def evaluate(job: Optional[Job], dataset_id: str, items: List[dict], sources: Di
             split_ix.append(split_pos[sp])
             if not it.get("has_label"):
                 unlabeled_bg += 1
-            gt = cv.rows(gts.get(it["id"], []))
+            gt = cv.rows(outside_regions(gts.get(it["id"], []), regs.get(it["id"])))
             W, H = it.get("width"), it.get("height")
             for g in gt:
                 g_img.append(k); g_cls.append(int(g[0]))
@@ -1120,7 +1130,7 @@ def evaluate(job: Optional[Job], dataset_id: str, items: List[dict], sources: Di
                 sd.files.append(f)
                 if f:
                     matched_files[side] += 1
-                preds = cv.rows(apply_remap(src.preds(idx), remap.get(side)))
+                preds = cv.rows(outside_regions(apply_remap(src.preds(idx), remap.get(side)), regs.get(it["id"])))
                 sd.noconf += sum(1 for p in preds if p[5] is None)
                 r = evaluate_image(gt, preds, ious, primary, method, W, H)
                 for p in range(len(r.cls)):

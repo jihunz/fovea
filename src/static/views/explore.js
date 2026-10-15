@@ -7,8 +7,9 @@
 // same image while reviews change who matches the filter), fetched page by page for the rows on screen.
 import { ISSUE_LABELS as BASE_ISSUE_LABELS } from './issues.js';
 import { thumbPx, trackImage, createImageLoader, createFrameCache } from '../lib/media.js';
+import { EMPTY as NO_ANN, annSchema, attrFilterText, attrPairs, regionLabel, toggleAttr } from '../lib/annattrs.js';
 
-const FILTER_KEYS = ['split', 'cls', 'only_cls', 'labeled', 'review', 'exclude_review', 'issue', 'ai', 'q', 'seq', 'ids', 'set', 'min_boxes', 'max_boxes', 'has_label', 'seed'];
+const FILTER_KEYS = ['split', 'cls', 'only_cls', 'labeled', 'review', 'exclude_review', 'issue', 'ai', 'q', 'seq', 'ids', 'set', 'min_boxes', 'max_boxes', 'has_label', 'seed', 'attr'];
 const TILE_PX = { s: 150, m: 210, l: 300, xl: 420 };
 const SIZES = ['s', 'm', 'l', 'xl'];
 const GAP = 10, META_H = 30, PAD_X = 16, PAD_TOP = 14, PAD_BOTTOM = 76;
@@ -393,6 +394,9 @@ async function render(el, { ctx, dataset, fovea }) {
   const { classColor, className, REVIEW } = fovea.colors;
   const ds = dataset;
   let names = ds.classes || [];
+  // Attributes / regions of annotations converted from another format (occlusion …): filter section and chip names
+  let annSch = NO_ANN;
+  annSchema(fovea.api, ds).then((sch) => { if (sch !== NO_ANN) { annSch = sch; try { renderChips(); } catch (e) { /* view closed */ } } });
   const ssKey = `fovea.explore.${ds.id}`;
   const thrKey = `fovea.ann.thr.${ds.id}`;           // shared with Annotate's proposals slider
 
@@ -547,7 +551,7 @@ async function render(el, { ctx, dataset, fovea }) {
     const nc = csv(filters.cls || filters.only_cls).length;
     clsBtn.querySelector('.lbl').textContent = nc ? `${nc} class${nc > 1 ? 'es' : ''}` : 'Classes';
     clsBtn.classList.toggle('active', nc > 0);
-    const nf = ['labeled', 'review', 'issue', 'ai', 'min_boxes', 'max_boxes', 'exclude_review', 'has_label'].filter(k => filters[k]).length;
+    const nf = ['labeled', 'review', 'issue', 'ai', 'min_boxes', 'max_boxes', 'exclude_review', 'has_label', 'attr'].filter(k => filters[k]).length;
     filterBtn.querySelector('.lbl').textContent = nf ? `Filters · ${nf}` : 'Filters';
     filterBtn.classList.toggle('active', nf > 0);
     const s = sortList().find(([k]) => k === sort), dir = order === 'desc' ? '↓' : '↑';
@@ -578,6 +582,7 @@ async function render(el, { ctx, dataset, fovea }) {
       else if (k === 'min_boxes') text = `≥ ${v} boxes`;
       else if (k === 'max_boxes') text = `≤ ${v} boxes`;
       else if (k === 'exclude_review') text = `Not ${csv(v).join(', ')}`;
+      else if (k === 'attr') text = attrFilterText(annSch, v);
       else text = `${k}: ${v}`;
       out.push(ui.chip(text, { cls: 'filter-chip', onRemove: () => setFilter(k, '') }));
     }
@@ -715,10 +720,27 @@ async function render(el, { ctx, dataset, fovea }) {
       h('div', { class: 'small strong muted mt-8' }, 'Issues', h('span', { class: 'xs faint counts-note', 'data-dim': 'issue', style: 'font-weight:400;margin-left:6px' })),
       h('div', { class: 'issue-list' }, issueRow('any', 'Any issue or flag'),
         groups.map(([title, cs]) => [h('div', { class: 'xs faint grp' }, title), cs.map(c => issueRow(c, issueLabels[c] || c))])),
+      attrSection(),
       h('div', { class: 'row' }, h('span', { class: 'spacer' }), h('button', { class: 'btn btn-sm', onClick: () => { clearFilters(); ui.closeMenu && ui.closeMenu(); } }, 'Clear all filters')));
     const stop = watchCounts(content);
     ui.popover(filterBtn, content, { width: 320, onClose: stop });
     scheduleFacets(0);
+  }
+  /** Attributes and regions of annotations converted from another format (VisDrone occlusion, KITTI DontCare …):
+      images with at least one box of the checked value. Values of one attribute are alternatives. */
+  function attrSection() {
+    const attrs = (annSch.attributes || []).filter(a => a.values && Object.keys(a.values).length);
+    const regs = Object.keys(annSch.regions || {});
+    if (!attrs.length && !regs.length) return null;
+    let cur = filters.attr || '';
+    const commit = fovea.debounce(() => setFilter('attr', cur), 400);
+    const row = (token, label) => h('label', { class: 'check cls-row' },
+      h('input', { type: 'checkbox', checked: attrPairs(cur).some(([n, v]) => `${n}:${v}` === token), onChange: () => { cur = toggleAttr(cur, token); commit(); } }),
+      h('span', { class: 'grow truncate' }, label), countSpan('attr', token, () => 'No image with this value under the other filters'));
+    return [h('div', { class: 'small strong muted mt-8' }, 'Annotation attributes'),
+      h('div', { class: 'issue-list' },
+        attrs.map(a => [h('div', { class: 'xs faint grp' }, a.label), Object.entries(a.values).map(([v, m]) => row(`${a.name}:${v}`, m || v))]),
+        regs.length ? [h('div', { class: 'xs faint grp' }, 'Regions'), regs.map(k => row(`region:${k}`, `Has ${regionLabel(annSch, k).toLowerCase()}`))] : null)];
   }
   /** A filter dropdown whose options say how many images each choice would show (facets), kept current. */
   function countSelect(dim, opts, label) {

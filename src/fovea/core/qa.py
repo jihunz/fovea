@@ -2640,6 +2640,11 @@ def _class_label(names: Sequence[Any], c: int) -> str:
 
 def _store_interp(dataset_id: str, model: str, params: dict, preds: List[Tuple[int, list, str]],
                   image_ids: List[int]) -> Tuple[int, List[dict]]:
+    from .annindex import regions_by_image
+    regs = regions_by_image({iid for iid, _b, _r in preds})
+    if regs:                     # never suggest an object inside a region that is not labelled object by object
+        preds = [(iid, b, r) for iid, b, r in preds
+                 if not any(abs(b[1] - g[0]) <= g[2] / 2 and abs(b[2] - g[1]) <= g[3] / 2 for g in regs.get(iid, ()))]
     now = db.now()
     with db.transaction() as conn:
         if image_ids:

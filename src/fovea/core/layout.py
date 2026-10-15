@@ -12,6 +12,10 @@ Supported layouts
 * ``collection``  : a folder holding several datasets — nothing is registered; ``candidates`` lists them
 * ``custom``      : image / label folders with other names (imgs/ + annotations/, train_images/ …) — found by an AI
                     provider reading the folder listing (the default, ai/folders.py), else by conventional names
+
+Annotations in another format than YOLO (VisDrone, KITTI, DOTA, VOC, COCO, LabelMe, CVAT, or one an AI reads) are
+attached to their source (``ann_path``, ``ann_format``) and described in ``formats`` (core/annformats.py); the scan
+converts them into the source's label folder before indexing.
 """
 from __future__ import annotations
 
@@ -22,12 +26,13 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import yaml
 
 from ..config import IMAGE_EXTS, LABEL_EXT, SPLIT_NAMES
 from ..paths import resolve, to_host
+from . import annformats as af
 from .labels import MAX_INFERRED_CLASSES
 
 SPLIT_ALIASES = {"valid": "val", "validation": "val", "eval": "test", "evaluation": "test", "training": "train",
@@ -71,6 +76,26 @@ def is_split_name(name: str) -> bool:
     return norm_split(name) in ("train", "val", "test") or name.lower() in _SPLIT_LIKE
 
 
+def split_names(names: List[str]) -> Dict[str, str]:
+    """Split names for sibling folders. A train / val / test word inside longer names is read as the split when every
+    folder shares the words before it: 'VisDrone2019-DET-train', '…-val', '…-test-dev' → train, val, test-dev (Export
+    maps a split by its leading word, so 'visdrone2019-det-val' used to feed training). Other names stay as they are."""
+    toks = {n: [t for t in _TOKEN.split((n or "").lower()) if t] for n in names}
+    cut: Optional[Dict[str, int]] = {}
+    for n, t in toks.items():
+        i = next((k for k, x in enumerate(t) if is_split_name(x)), None)
+        if not i:                              # no split word, or the name starts with it: nothing to strip
+            cut = None
+            break
+        cut[n] = i
+    out = {n: norm_split(n) for n in names}
+    if cut and len({tuple(toks[n][:cut[n]]) for n in names}) == 1:
+        for n in names:
+            rest = toks[n][cut[n]:]
+            out[n] = "-".join([norm_split(rest[0])] + rest[1:])
+    return out
+
+
 @dataclass
 class Source:
     split: str
@@ -83,6 +108,8 @@ class Source:
     label_count: Optional[int] = None
     recursive: bool = True       # False: only files directly in img_dir (loose images beside split folders)
     count_capped: bool = False   # the estimate walk hit its time budget: counts are lower bounds
+    ann_path: str = ""           # annotations in another format (a folder, or one COCO / CVAT file)
+    ann_format: str = ""         # their format card id (Layout.formats); converted into label_dir by the scan
 
     def to_public(self) -> dict:
         d = asdict(self)
@@ -105,6 +132,7 @@ class Layout:
     unmatched_labels: List[dict] = field(default_factory=list)  # label folders no source uses: [{path_host, files}]
     roles_from: str = ""                                      # kind 'custom': 'ai' | 'names' (how folders were found)
     roles_ai: Optional[dict] = None                           # {provider, model, reason} when an AI provider found them
+    formats: Dict[str, dict] = field(default_factory=dict)    # card id -> {card, state: pending|converted, check, counts}
 
     def to_dict(self) -> dict:
         return {
@@ -113,7 +141,7 @@ class Layout:
             "data_yaml": self.data_yaml, "data_yaml_host": to_host(self.data_yaml) if self.data_yaml else None,
             "classes": self.classes, "notes": self.notes, "classes_from": self.classes_from,
             "candidates": self.candidates, "unmatched_labels": self.unmatched_labels,
-            "roles_from": self.roles_from, "roles_ai": self.roles_ai,
+            "roles_from": self.roles_from, "roles_ai": self.roles_ai, "formats": self.formats,
         }
 
     @staticmethod
@@ -125,12 +153,13 @@ class Layout:
                 list_file=s.get("list_file"), base=s.get("base"), label_dir_exists=s.get("label_dir_exists", False),
                 image_count=s.get("image_count"), label_count=s.get("label_count"),
                 recursive=s.get("recursive", True), count_capped=s.get("count_capped", False),
+                ann_path=s.get("ann_path", ""), ann_format=s.get("ann_format", ""),
             ))
         return Layout(kind=d.get("kind", "unknown"), root=d.get("root", ""), sources=srcs,
                       data_yaml=d.get("data_yaml"), classes=list(d.get("classes", [])), notes=list(d.get("notes", [])),
                       classes_from=d.get("classes_from", ""), candidates=list(d.get("candidates", [])),
                       unmatched_labels=list(d.get("unmatched_labels", [])), roles_from=d.get("roles_from", ""),
-                      roles_ai=d.get("roles_ai"))
+                      roles_ai=d.get("roles_ai"), formats=dict(d.get("formats") or {}))
 
 
 # --------------------------------------------------------------------------- helpers
@@ -547,8 +576,6 @@ IMAGE_DIR_NAMES = {"images", "image", "imgs", "img", "jpegimages", "jpeg", "jpg"
 LABEL_DIR_NAMES = {"labels", "label", "annotations", "annotation", "annots", "annot", "anns", "ann", "yolo",
                    "yololabels", "labelsyolo", "yolotxt", "txt", "gt", "groundtruth", "bboxes", "bbox", "boxes",
                    "targets", "target"}
-_NOT_LABELS = {"classes.txt", "labels.txt", "obj.names", "readme.txt", "license.txt", "train.txt", "val.txt",
-               "valid.txt", "test.txt", "requirements.txt", "notes.txt"}
 _TOKEN = re.compile(r"[^a-z0-9]+")
 INVENTORY_MAX_DIRS = 400
 INVENTORY_MAX_DEPTH = 4
@@ -585,6 +612,16 @@ class DirInfo:
     tree_txt: int = 0
     img_stems: set = field(default_factory=set)  # a few image / label file stems, to tell which labels belong where
     txt_stems: set = field(default_factory=set)
+    ann_stems: set = field(default_factory=set)  # stems of .txt / .xml / .json directly inside
+    txt_kind: str = ""           # what the .txt directly inside hold: 'yolo' | 'other' (VisDrone, KITTI …) | 'empty'
+    first_line: str = ""
+    tree_other: int = 0          # folders at or below this one whose .txt are not YOLO
+    tree_ann: int = 0            # annotation files of another format at or below (.txt that are not YOLO, .xml, .json)
+
+    @property
+    def yolo_labels(self) -> bool:
+        """Holds YOLO label files (at or below it) and nothing that reads as another format."""
+        return self.tree_txt > 0 and not self.tree_other
 
 
 def folder_inventory(root: Path, max_dirs: int = INVENTORY_MAX_DIRS, max_depth: int = INVENTORY_MAX_DEPTH,
@@ -616,7 +653,7 @@ def folder_inventory(root: Path, max_dirs: int = INVENTORY_MAX_DIRS, max_depth: 
             ext = f[dot:].lower() if dot > 0 else ""
             if ext in IMAGE_EXTS:
                 d.images += 1
-            elif ext == LABEL_EXT and f.lower() not in _NOT_LABELS:
+            elif ext == LABEL_EXT and f.lower() not in af.NOT_LABELS:
                 d.txt += 1
             elif ext in (".xml", ".json"):
                 d.other[ext] = d.other.get(ext, 0) + 1
@@ -628,6 +665,15 @@ def folder_inventory(root: Path, max_dirs: int = INVENTORY_MAX_DIRS, max_depth: 
                 d.img_stems.add(f[:dot])
             elif ext == LABEL_EXT and len(d.txt_stems) < 200:
                 d.txt_stems.add(f[:dot])
+            if ext in af.ANN_EXTS and len(d.ann_stems) < 200:
+                d.ann_stems.add(f[:dot])
+        if d.txt:
+            lines: List[str] = []
+            for f in sorted(x for x in files if x.lower().endswith(LABEL_EXT) and not x.startswith(".")
+                            and x.lower() not in af.NOT_LABELS)[:3]:
+                lines += af.head_lines(Path(cur) / f, 6)
+            d.txt_kind = af.txt_kind(lines)
+            d.first_line = lines[0].strip()[:120] if lines else ""
         out.append(d)
         by_path[cur] = d
         if len(out) >= max_dirs or time.monotonic() > deadline:
@@ -639,6 +685,8 @@ def folder_inventory(root: Path, max_dirs: int = INVENTORY_MAX_DIRS, max_depth: 
             if a is not None:
                 a.tree_images += d.images
                 a.tree_txt += d.txt
+                a.tree_other += 1 if d.txt_kind == "other" else 0
+                a.tree_ann += (d.txt if d.txt_kind == "other" else 0) + sum(d.other.values())
             if str(up) == str(root) or up.parent == up:
                 break
             up = up.parent
@@ -653,7 +701,9 @@ def inventory_lines(inv: List[DirInfo], limit: int = 200) -> List[str]:
             continue
         extra = "".join(f" {k[1:]}={v}" for k, v in sorted(d.other.items()))
         eg = f"  e.g. {', '.join(d.sample)}" if d.sample else ""
-        lines.append(f"{d.rel}  images={d.images} txt={d.txt}{extra}  (below: images={d.tree_images} txt={d.tree_txt}){eg}")
+        first = f"  first .txt line: {d.first_line!r} ({'YOLO' if d.txt_kind == 'yolo' else 'not YOLO'})" if d.first_line else ""
+        lines.append(f"{d.rel}  images={d.images} txt={d.txt}{extra}  (below: images={d.tree_images} txt={d.tree_txt}){eg}"
+                     f"{first}")
         if len(lines) >= limit:
             break
     return lines
@@ -679,16 +729,28 @@ def _overlap(a: set, b: set) -> int:
 
 
 def _best_label_dir(img: DirInfo, cands: List[DirInfo], split: str = "") -> Optional[DirInfo]:
-    """The label-named folder with .txt files that best fits `img`: same split word, shared file stems, most files."""
-    ok = [c for c in cands if c.tree_txt > 0]
+    """The label-named folder of YOLO .txt files that best fits `img`: same split word, shared file stems, most files.
+    A folder of .txt in another format (VisDrone's annotations/) is not a label folder — see _best_ann_dir."""
+    ok = [c for c in cands if c.yolo_labels]
     if not ok:
         return None
     return max(ok, key=lambda c: (dir_role(c.path.name)[1] == split and bool(split),
                                   _overlap(c.txt_stems, img.img_stems), c.tree_txt))
 
 
+def _best_ann_dir(img: DirInfo, cands: List[DirInfo], split: str = "") -> Optional[DirInfo]:
+    """The sibling folder holding the images' annotations in another format (.txt that are not YOLO, .xml, .json)."""
+    ok = [c for c in cands if c.tree_ann > 0 and c is not img]
+    if not ok:
+        return None
+    best = max(ok, key=lambda c: (dir_role(c.path.name)[1] == split and bool(split), _overlap(c.ann_stems, img.img_stems),
+                                  dir_role(c.path.name)[0] == "label", c.tree_ann))
+    return best if (_overlap(best.ann_stems, img.img_stems) or not best.ann_stems) else None
+
+
 def roles_by_names(root: Path, inv: List[DirInfo]) -> List[tuple]:
-    """[(split, img_dir, label_dir, recursive)] from conventional folder names, or [] when no folder is image-named."""
+    """[(split, img_dir, label_dir, recursive, annotations)] from conventional folder names, or [] when no folder is
+    image-named. `annotations`: a folder of another format to convert into label_dir (None when there is none)."""
     by_rel = {d.rel: d for d in inv}
 
     def kids(d: DirInfo) -> List[DirInfo]:
@@ -701,33 +763,44 @@ def roles_by_names(root: Path, inv: List[DirInfo]) -> List[tuple]:
     for I in imgs:
         parent = by_rel.get(Path(I.rel).parent.as_posix()) or by_rel.get(".")
         sib_labels = [c for c in kids(parent) if dir_role(c.path.name)[0] == "label"] if parent else []
+        sib_ann = [c for c in kids(parent) if c is not I and c.tree_ann > 0] if parent else []
         role_split = dir_role(I.path.name)[1]
         split_kids = [c for c in kids(I) if is_split_name(c.path.name) and c.tree_images > 0]
         if split_kids:
             L = _best_label_dir(I, sib_labels)
+            A = None if L else _best_ann_dir(I, sib_ann)
             for S in split_kids:
                 lab = by_rel.get(f"{L.rel}/{S.path.name}") if L else None
+                ann = by_rel.get(f"{A.rel}/{S.path.name}") if A else None
                 out.append((norm_split(S.path.name), S.path, lab.path if lab else (L.path / S.path.name if L else
-                            default_label_dir(S.path, root)), True))
+                            default_label_dir(S.path, root)), True, ann.path if ann else None))
             if I.images:
-                out.append(("", I.path, L.path if L else default_label_dir(I.path, root), False))
+                out.append(("", I.path, L.path if L else default_label_dir(I.path, root), False, A.path if A else None))
             continue
         if parent and parent.rel != ".":
             split = norm_split(parent.path.name) if is_split_name(parent.path.name) else (role_split or parent.path.name)
         else:
             split = role_split
-        if I.txt and _overlap(I.img_stems, I.txt_stems):
-            out.append((split, I.path, I.path, True))                       # labels beside the images
+        if I.txt and I.txt_kind != "other" and _overlap(I.img_stems, I.txt_stems):
+            out.append((split, I.path, I.path, True, None))                 # labels beside the images
             continue
         L = _best_label_dir(I, sib_labels, role_split)
-        out.append((split, I.path, L.path if L else default_label_dir(I.path, root), True))
-    return out
+        A = None
+        if L is None:
+            A = _best_ann_dir(I, sib_ann, role_split)
+            if A is None and I.tree_ann and _overlap(I.img_stems, I.ann_stems):
+                A = I                                                        # LabelMe .json beside the images
+        out.append((split, I.path, L.path if L else default_label_dir(I.path, root), True, A.path if A else None))
+    names = split_names(sorted({t[0] for t in out}))
+    return [(names.get(t[0], t[0]),) + tuple(t[1:]) for t in out]
 
 
 def layout_from_roles(root: Path, pairs: List[tuple], estimate: bool, how: str) -> Layout:
     lay = Layout(kind="custom", root=str(root), roles_from=how)
-    for split, img, lab, recursive in pairs:
-        lay.sources.append(_mk_dir_source(split, Path(img), Path(lab), estimate=estimate, recursive=recursive))
+    for split, img, lab, recursive, *rest in pairs:
+        src = _mk_dir_source(split, Path(img), Path(lab), estimate=estimate, recursive=recursive)
+        src.ann_path = str(rest[0]) if rest and rest[0] else ""
+        lay.sources.append(src)
 
     def rel(p: str) -> str:
         try:
@@ -760,24 +833,37 @@ def _needs_roles(lay: Layout) -> str:
     return ""
 
 
-def _repoint_labels(lay: Layout, pairs: List[tuple]) -> bool:
-    """Give sources whose label folder is missing the existing label folder `pairs` name for the same images
-    (or for their parent, as <labels>/<split>). The image sources themselves — linked splits, loose images — stay."""
-    by_img = {os.path.normpath(str(img)): Path(lab) for _s, img, lab, _r in pairs}
-    changed = []
+def _path_key(p: str) -> str:
+    """A folder's identity: its real path (on a case-insensitive disk images/ and Images/ are one folder)."""
+    try:
+        return os.path.normcase(os.path.realpath(p)).lower() if os.path.exists(p) else os.path.normpath(p)
+    except OSError:
+        return os.path.normpath(p)
+
+
+def _repoint_labels(lay: Layout, pairs: List[tuple]) -> int:
+    """Give sources whose label folder is missing the existing YOLO label folder `pairs` name for the same images
+    (or for their parent, as <labels>/<split>), or else the folder of another format their annotations are in. The
+    image sources themselves — linked splits, loose images — stay. Returns how many label folders were re-pointed."""
+    by_img = {_path_key(str(t[1])): (Path(t[2]), t[4] if len(t) > 4 else None) for t in pairs}
+    changed = 0
     for s in lay.sources:
         if s.list_file or s.label_dir_exists or not s.img_dir:
             continue
         img = os.path.normpath(s.img_dir)
-        lab = by_img.get(img)
-        if lab is None and os.path.dirname(img) in by_img:      # images/ was paired as a whole: labels go per split
-            lab = by_img[os.path.dirname(img)] / os.path.basename(img)
-        if lab is None or not lab.is_dir() or os.path.normpath(str(lab)) == img:
+        lab, ann = by_img.get(_path_key(img), (None, None))
+        if lab is None and _path_key(os.path.dirname(img)) in by_img:   # images/ paired as a whole: labels per split
+            lab, ann = by_img[_path_key(os.path.dirname(img))]
+            lab, ann = lab / os.path.basename(img), (Path(ann) / os.path.basename(img) if ann else None)
+        if ann and Path(ann).exists() and not s.ann_path:
+            s.ann_path = str(ann)
+        if lab is None or not lab.is_dir() or os.path.normpath(str(lab)) == img \
+                or af.tree_txt_kind(lab) == "other":
             continue
         s.label_dir, s.label_dir_exists = str(lab), True
         s.label_count = count_labels(lab, recursive=s.recursive) if s.image_count is not None else None
-        changed.append(s)
-    return bool(changed)
+        changed += 1
+    return changed
 
 
 def _sibling_labels(lay: Layout) -> None:
@@ -805,7 +891,7 @@ def _sibling_labels(lay: Layout) -> None:
             d.tree_txt, d.txt_stems = len(names), {n[:-len(LABEL_EXT)] for n in names[:200]}
             cands.append(d)
         best = _best_label_dir(me, cands, dir_role(img.name)[1])
-        if best is not None and _overlap(best.txt_stems, me.img_stems):
+        if best is not None and _overlap(best.txt_stems, me.img_stems) and af.tree_txt_kind(best.path) != "other":
             s.label_dir, s.label_dir_exists = str(best.path), True
             s.label_count = count_labels(best.path, recursive=s.recursive) if s.image_count is not None else None
             lay.kind = "flat"
@@ -843,6 +929,8 @@ def resolve_roles(lay: Layout, estimate: bool, ai: Optional[bool], allow_guarded
             shown = ", ".join(sorted({Path(s.label_dir).relative_to(root).as_posix() + "/" for s in lay.sources
                                       if s.label_dir_exists and _within(s.label_dir, str(root))}))
             lay.notes.append(f"Labels found {'by AI' if how == 'ai' else 'by folder name'} in {shown}")
+        elif pairs and any(s.ann_path for s in lay.sources):
+            lay.roles_from, lay.roles_ai = how, info
         return lay
     if not pairs:
         if why:
@@ -861,6 +949,296 @@ def resolve_roles(lay: Layout, estimate: bool, ai: Optional[bool], allow_guarded
     return out
 
 
+# --------------------------------------------------------------------------- annotation formats
+
+def _image_names(d: Path, limit: int = 300) -> List[str]:
+    out: List[str] = []
+    for cur, dirs, names in os.walk(d):
+        dirs[:] = sorted(x for x in dirs if not x.startswith("."))
+        for n in sorted(names):
+            dot = n.rfind(".")
+            if dot > 0 and n[dot:].lower() in IMAGE_EXTS and not n.startswith("."):
+                out.append(n)
+                if len(out) >= limit:
+                    return out
+    return out
+
+
+def _ann_stems(d: Path, exts, max_entries: int = 6000, recursive: bool = True) -> set:
+    out: set = set()
+    seen = 0
+    for cur, dirs, names in os.walk(d):
+        dirs[:] = sorted(x for x in dirs if not x.startswith(".")) if recursive else []
+        for n in names:
+            seen += 1
+            low = n.lower()
+            dot = low.rfind(".")
+            if dot > 0 and low[dot:] in exts and not n.startswith(".") and low not in af.NOT_LABELS:
+                out.add(n[:dot])
+        if seen > max_entries:
+            break
+    return out
+
+
+def _inside_root(p: Path, root: Path) -> bool:
+    return _within(os.path.normpath(str(p)), os.path.normpath(str(root)))
+
+
+def find_annotations(src: Source, root: Path) -> Optional[Path]:
+    """Where this image folder's annotations in another format are: .xml / .json beside the images (LabelMe, VOC), a
+    folder whose .txt / .xml / .json files carry the images' names — next to the image folder inside the dataset
+    (VisDrone annotations/, VOC Annotations/), or a label-named sibling when the image folder itself was picked — or
+    one COCO / CVAT file that names the images, beside the folder, in an annotations/ folder or at the dataset root.
+    Folders of other datasets next to this one are never read."""
+    img = Path(src.img_dir)
+    names = _image_names(img)
+    if not names:
+        return None
+    stems = {n.rsplit(".", 1)[0] for n in names}
+    label = os.path.normpath(src.label_dir) if src.label_dir else ""
+    at_root = os.path.normpath(str(img)) == os.path.normpath(str(root))
+    if at_root:
+        cands = _subdirs(img) + [x for x in _subdirs(img.parent) if x != img and dir_role(x.name)[0] == "label"]
+    else:
+        cands = [x for x in _subdirs(img.parent) if x != img and _inside_root(x, root)]
+    cands = [c for c in cands if os.path.normpath(str(c)) != label]
+    best, score = None, 0.0
+    for c in [img] + cands:
+        found = _ann_stems(c, (".xml", ".json") if c == img else af.ANN_EXTS, recursive=c != img)
+        if not found:
+            continue
+        r = len(stems & found) / len(stems) + (0.05 if dir_role(c.name)[0] == "label" else 0.0)
+        if r >= 0.3 and r > score:
+            best, score = c, r
+    if best is not None:
+        return best
+    return find_single_file(img, root, names[:40])
+
+
+def find_single_file(img: Path, root: Path, probe: List[str], min_share: float = 0.3) -> Optional[Path]:
+    """One COCO / CVAT file that lists most of `probe` (image file names), near the image folder."""
+    best, score = None, 0.0
+    for base in dict.fromkeys([img.parent, img.parent / "annotations", root, root / "annotations", img]):
+        if not base.is_dir():
+            continue
+        files = [f for f in sorted(base.iterdir())[:400] if f.suffix.lower() in (".json", ".xml") and f.is_file()]
+        for f in files[:30]:
+            card, _s, how = af.recognize(f)
+            if how != "catalog" or not card or not card.get("single"):
+                continue
+            try:
+                if f.stat().st_size > 300 * 1024 * 1024:
+                    return f                      # too big to search here; the conversion matches image names
+                text = f.read_bytes().decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            hits = sum(1 for n in probe if n in text)
+            if hits >= min_share * len(probe) and hits / len(probe) > score:
+                best, score = f, hits / len(probe)
+    return best
+
+
+_SPLIT_PREFIX = re.compile(r"^(train|training|val|valid|validation|test|testing)(\d{2,4})?$")
+
+
+def split_of_folder(name: str) -> str:
+    """'train2017' → train, 'val2017' → val, 'images_test' → test; else the folder name."""
+    for t in _TOKEN.split((name or "").lower()):
+        m = _SPLIT_PREFIX.match(t)
+        if m:
+            return norm_split(m.group(1))
+    return norm_split(name)
+
+
+def _per_folder_files(lay: Layout, root: Path) -> bool:
+    """A folder of image folders with one COCO / CVAT file per folder (coco/train2017 + val2017 with
+    annotations/instances_train2017.json …): one source per image folder, each with its own file."""
+    if len(lay.sources) != 1 or lay.sources[0].list_file or not lay.sources[0].img_dir:
+        return False
+    if os.path.normpath(lay.sources[0].img_dir) != os.path.normpath(str(root)) or has_images_shallow(root):
+        return False
+    subs = [d for d in _subdirs(root) if has_images_shallow(d)]
+    if not subs:
+        return False
+    found = []
+    for d in subs:
+        f = find_single_file(d, root, _image_names(d, 40), min_share=0.5)
+        if f is not None:
+            found.append((d, f))
+    if not found:
+        return False
+    estimate = lay.sources[0].image_count is not None
+    lay.sources = []
+    for d, f in found:
+        src = _mk_dir_source(split_of_folder(d.name), d, root / "labels" / d.name, estimate=estimate)
+        src.ann_path = str(f)
+        lay.sources.append(src)
+    lay.kind = "custom"
+    lay.notes = [n for n in lay.notes if "No labels found" not in n and "were not used as labels" not in n]
+    lay.notes.append("Image folders " + ", ".join(d.name for d, _f in found[:6]) + " each have their own "
+                     "annotation file")
+    return True
+
+
+def _small_check(st: dict) -> dict:
+    keep = ("images", "annotated", "checked", "entries", "boxes", "regions", "bad", "unknown", "oob", "tiny",
+            "dropped", "ok", "problems", "classes", "class_counts", "attr_values", "deferred")
+    out = {k: st[k] for k in keep if k in st}
+    out["unknown_values"] = dict(list((st.get("unknown_values") or {}).items())[:10])
+    return out
+
+
+def _format_for(src: Source, ann: Path, root: Path, ai: Optional[bool], allow_guarded: bool,
+                known: Dict[str, dict]) -> tuple:
+    """(card, check) for one source's annotations — the catalog first, then a card another split already uses, then
+    an AI provider (sample lines, and the official documentation when Settings allows looking it up). A card is only
+    returned when `check` passed on the real files. Else (None, {how, why, tried})."""
+    img = Path(src.img_dir)
+    hint = " ".join((str(root), str(ann), src.img_dir))
+    card, sn, how = af.recognize(ann, hint)
+    if how in ("yolo", "empty", "none"):
+        return None, {"how": how}
+    big = ann.is_file() and ann.stat().st_size > 200 * 1024 * 1024
+    tried: List[dict] = []
+    if card is not None:
+        if big:          # a huge COCO file: parsed once, by the conversion job (the fingerprint is unambiguous)
+            return card, {"ok": True, "deferred": True, "problems": [], "classes": card.get("classes") or []}
+        st = af.check(card, img, ann, src.recursive)
+        if st["ok"]:
+            return card, st
+        tried.append({"name": card.get("name"), "problems": st["problems"]})
+    for k in known.values():
+        if k is card:
+            continue
+        st = af.check(k, img, ann, src.recursive, sample=60, seconds=2.0)
+        if st["ok"]:
+            return k, st
+    why = ""
+    if ai is not False and sn is not None:
+        from ..ai import formats as ai_formats            # lazy: the core layer does not load the AI stack up front
+        try:
+            res = ai_formats.infer_card(sn, img, ann, root, use_setting=ai is None, allow_guarded=allow_guarded,
+                                        failed=tried)
+        except Exception as e:  # noqa: BLE001 — a provider failure leaves the annotations unconverted, nothing more
+            res = {"why": str(e)[:200]}
+        for c in res.get("cards") or []:
+            st = af.check(c, img, ann, src.recursive)
+            if st["ok"]:
+                ai_formats.remember(res.get("key"), c)
+                return c, st
+            tried.append({"name": c.get("name"), "problems": st["problems"], "source": c.get("source")})
+            # one repair round: the model sees what went wrong on the real files
+            try:
+                rep = ai_formats.repair_card(sn, img, ann, root, c, st["problems"], allow_guarded=allow_guarded)
+            except Exception as e:  # noqa: BLE001
+                rep = {"why": str(e)[:200]}
+            for c2 in rep.get("cards") or []:
+                st2 = af.check(c2, img, ann, src.recursive)
+                if st2["ok"]:
+                    ai_formats.remember(rep.get("key"), c2)
+                    return c2, st2
+                tried.append({"name": c2.get("name"), "problems": st2["problems"], "source": c2.get("source")})
+        why = res.get("why") or ""
+    return None, {"how": "unknown", "why": why, "tried": tried}
+
+
+def _rel(p: str, root: Path) -> str:
+    try:
+        r = Path(p).relative_to(root).as_posix()
+    except ValueError:
+        return to_host(p)
+    return r if r != "." else Path(p).name
+
+
+def resolve_formats(lay: Layout, ai: Optional[bool] = None, allow_guarded: bool = True) -> Layout:
+    """Attach annotations in another format to each image source and pick the format card that reads them (see
+    _format_for). The source's label_dir becomes where the scan writes the converted YOLO labels; a label folder Fovea
+    converted earlier (its .fovea-format.json) is recognised as such and never converted again."""
+    if lay.kind in ("list", "collection", "unknown") or not lay.sources:
+        return lay
+    root = Path(lay.root)
+    known: Dict[str, dict] = {}
+    unread: List[str] = []
+    if lay.kind == "bare":
+        _per_folder_files(lay, root)
+    for s in lay.sources:
+        if s.list_file or not s.img_dir:
+            continue
+        if s.label_dir and s.label_dir_exists:
+            marker = af.read_marker(Path(s.label_dir))
+            if marker and marker.get("state", "done") == "converting" and marker.get("format") and \
+                    marker.get("annotations"):                  # a conversion that did not finish: redo it
+                card = marker.get("card") or {}
+                s.ann_format, s.ann_path = marker["format"], marker["annotations"]
+                s.label_dir_exists = False
+                f = lay.formats.setdefault(marker["format"], {"card": card, "state": "pending", "check": {},
+                                                              "sources": 0})
+                f["sources"] += 1
+                continue
+            if marker:                                          # labels Fovea converted earlier
+                card = marker.get("card") or {}
+                fid = marker.get("format") or card.get("id") or "converted"
+                s.ann_format, s.ann_path = fid, marker.get("annotations") or s.ann_path
+                f = lay.formats.setdefault(fid, {"card": card, "state": "converted", "counts": {}, "sources": 0})
+                f["sources"] += 1
+                for k, v in (marker.get("counts") or {}).items():
+                    if isinstance(v, int):
+                        f["counts"][k] = f["counts"].get(k, 0) + v
+                f["classes"] = marker.get("classes") or f.get("classes")
+                continue
+            if af.tree_txt_kind(Path(s.label_dir)) != "other":
+                continue
+            s.ann_path = s.label_dir                            # a labels/ folder holding another format
+        if not s.ann_path:
+            found = find_annotations(s, root)
+            if found is None:
+                continue
+            s.ann_path = str(found)
+        ann = Path(s.ann_path)
+        card, st = _format_for(s, ann, root, ai, allow_guarded, known)
+        if card is None:
+            if st.get("how") in ("yolo", "empty") and ann.is_dir() and not s.label_dir_exists:
+                s.label_dir, s.label_dir_exists = str(ann), True    # YOLO labels in a folder with another name
+                s.label_count = count_labels(ann, recursive=s.recursive) if s.image_count is not None else None
+            elif st.get("how") == "unknown":
+                why = "; ".join(t["problems"][0] for t in st.get("tried") or [] if t.get("problems")) or st.get("why")
+                unread.append(f"{_rel(s.ann_path, root)}{f' ({why})' if why else ''}")
+                lay.formats.setdefault("unknown", {"card": {"id": "unknown", "name": "Unknown format"},
+                                                   "state": "unreadable", "why": why, "sources": 0})["sources"] += 1
+            if st.get("how") != "unknown":
+                s.ann_path = ""
+            continue
+        fid = card.get("id") or "custom"
+        known[fid] = card
+        s.ann_format = fid
+        out = af.output_dir_for(Path(s.label_dir) if s.label_dir else Path(s.img_dir) / "labels", ann)
+        s.label_dir, s.label_dir_exists = str(out), False
+        s.label_count = 0 if s.image_count is not None else None
+        f = lay.formats.setdefault(fid, {"card": card, "state": "pending", "check": _small_check(st), "sources": 0})
+        f["sources"] += 1
+    pend = [f for f in lay.formats.values() if f.get("state") == "pending"]
+    if pend:
+        names = ", ".join(sorted({f["card"].get("name") or "?" for f in pend}))
+        outs = ", ".join(sorted({_rel(s.label_dir, root) + "/" for s in lay.sources if s.ann_format
+                                 and not s.label_dir_exists}))[:300]
+        lay.notes = [n for n in lay.notes if "No labels found" not in n and "were not used as labels" not in n]
+        lay.notes.append(f"Annotations in {names} format — converted to YOLO labels in {outs} when you register "
+                         "(the original files are not changed)")
+        if not lay.classes:
+            cls = next((f["card"].get("classes") for f in pend if f["card"].get("spec", {}).get("class", {})
+                        .get("values")), None) or next((f.get("check", {}).get("classes") for f in pend), None)
+            if cls:
+                lay.classes, lay.classes_from = list(cls), "format"
+    conv = [f for f in lay.formats.values() if f.get("state") == "converted"]
+    if conv and not lay.classes:
+        cls = next((f.get("classes") for f in conv if f.get("classes")), None)
+        if cls:
+            lay.classes, lay.classes_from = list(cls), "format"
+    if unread:
+        lay.notes.append("Annotations Fovea could not read: " + "; ".join(unread[:3]))
+    return lay
+
+
 def detect(raw: str, estimate: bool = True, _depth: int = 0, ai: Optional[bool] = None,
            allow_guarded: bool = True) -> Layout:
     """`ai`: how folders with other names than images/ and labels/ are found — None follows Settings (an AI provider
@@ -873,6 +1251,7 @@ def detect(raw: str, estimate: bool = True, _depth: int = 0, ai: Optional[bool] 
         lay = _detect(raw, estimate, _depth)
         if _depth == 0:
             lay = resolve_roles(lay, estimate, ai, allow_guarded)
+            lay = resolve_formats(lay, ai, allow_guarded)
             lay.sources = sort_sources(lay.sources)
             _budget.deadline = max(_budget.deadline, time.monotonic() + 2.0)   # orphan-label counts stay bounded too
             _unmatched_label_dirs(lay)
@@ -965,8 +1344,9 @@ def _detect(raw: str, estimate: bool, _depth: int) -> Layout:
             return _collection(p, kids)
     if splits:
         lay = Layout(kind="split-first", root=str(p))
+        names = split_names([d.name for d in splits])
         for d in splits:
-            lay.sources.append(_mk_dir_source(norm_split(d.name), d / "images", d / "labels", estimate=estimate))
+            lay.sources.append(_mk_dir_source(names[d.name], d / "images", d / "labels", estimate=estimate))
         if not all(is_split_name(d.name) for d in splits) and len(splits) > 1:
             lay.notes.append("Folders " + ", ".join(d.name for d in splits[:6]) + " are indexed as splits of one dataset")
         return finish(lay)

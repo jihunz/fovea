@@ -18,7 +18,7 @@ from ..paths import to_host
 # `seed` is not a filter but travels with them: it picks the permutation of sort=random. `set` is a working-set
 # token (POST /api/datasets/{ds}/sets): only those images, in the set's order unless a sort is given.
 FILTER_KEYS = ("split", "cls", "only_cls", "labeled", "review", "exclude_review", "issue", "q", "seq", "ids",
-               "min_boxes", "max_boxes", "has_label", "ai", "seed", "set")
+               "min_boxes", "max_boxes", "has_label", "ai", "seed", "set", "attr")
 
 SET_EXPIRED_MESSAGE = ("This working set has expired or does not exist (sets are kept 24 h after their last use). "
                        "Go back to Explore and select the images again.")

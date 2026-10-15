@@ -178,6 +178,12 @@ def _box_query(ds_id: str, img_f: Dict[str, Any], classes: List[int], sort: str,
     that reads a short list runs it scoped to the list's images instead (_scoped_prefix)."""
     exprs_t, needs_images = SORTS[sort]
     exprs = [e.replace("{seed}", str(int(seed))) for e in exprs_t] + ["b.id"]
+    # attr= narrows the BOXES here (a box with occlusion:2), region= stays an image filter
+    pairs = imagesq.attr_pairs(img_f.get("attr")) if img_f.get("attr") else []
+    box_attrs = [(n, v) for n, v in (pairs or []) if n != "region"]
+    if box_attrs:
+        regions = [f"{n}:{v}" for n, v in pairs if n == "region"]
+        img_f = {**{k: v for k, v in img_f.items() if k != "attr"}, **({"attr": ",".join(regions)} if regions else {})}
     img_where, img_params = imagesq.build_where(ds_id, img_f)
     filtered = img_where.strip() != "i.dataset_id = ?"
     join_i = needs_images or filtered
@@ -199,6 +205,13 @@ def _box_query(ds_id: str, img_f: Dict[str, Any], classes: List[int], sort: str,
     if classes:
         where.append("b.cls IN (%s)" % ",".join("?" * len(classes)))
         params.extend(classes)
+    by_name: Dict[str, List[str]] = {}
+    for n, v in box_attrs:
+        by_name.setdefault(n, []).append(v)
+    for n, vals in by_name.items():
+        where.append("b.id IN (SELECT a.box_id FROM box_attrs a WHERE a.dataset_id = ? AND "
+                     f"CAST(json_extract(a.attrs, ?) AS TEXT) IN ({','.join('?' * len(vals))}))")
+        params.extend([ds_id, '$."' + n.replace('"', "") + '"'] + vals)
     return prefix, prefix_params, f"{sql} WHERE {' AND '.join(where)}", params, exprs
 
 
@@ -439,6 +452,9 @@ def _order_version(ds_id: str, prefix: str, body: str) -> tuple:
                                         (ds_id,)).fetchone()))
     if "reviews" in body:
         parts.append(tuple(conn.execute("SELECT COUNT(*), MAX(updated_at) FROM reviews WHERE dataset_id = ?",
+                                        (ds_id,)).fetchone()))
+    if "box_attrs" in body or "image_regions" in body:
+        parts.append(tuple(conn.execute("SELECT COUNT(*), TOTAL(box_id) FROM box_attrs WHERE dataset_id = ?",
                                         (ds_id,)).fetchone()))
     return (_label_state(conn, ds_id), tuple(parts))
 

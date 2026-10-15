@@ -289,8 +289,12 @@ def live_preds(meta: dict, side: str, image_id: int, file_rel: str) -> Tuple[Lis
 
 def image_detail(ds_id: str, eid: str, meta: dict, data: Optional[dict], image: dict, k: int, classes,
                  files: Optional[Dict[str, str]] = None) -> dict:
-    raw_gt = [[int(r["cls"]), r["xc"], r["yc"], r["w"], r["h"]] for r in
-              db.query("SELECT cls, xc, yc, w, h FROM boxes WHERE image_id=? ORDER BY id", (image["id"],))]
+    from ...core.annindex import regions_by_image
+    from .evaluate import outside_regions
+    regs = regions_by_image([image["id"]]).get(image["id"])
+    raw_gt = outside_regions([[int(r["cls"]), r["xc"], r["yc"], r["w"], r["h"]] for r in
+                              db.query("SELECT cls, xc, yc, w, h FROM boxes WHERE image_id=? ORDER BY id",
+                                       (image["id"],))], regs)
     cv = ClassView.from_meta(meta)
     gt = cv.rows(raw_gt)
     ious = meta["ious"]
@@ -308,6 +312,7 @@ def image_detail(ds_id: str, eid: str, meta: dict, data: Optional[dict], image: 
         else:
             file_rel = data["sides"][side]["files"][idx] if (data is not None and idx is not None) else ""
         preds, info = live_preds(meta, side, image["id"], file_rel)
+        preds = outside_regions(preds, regs)
         r = evaluate_image(gt, preds, ious, primary, meta.get("metric", "coco"), image.get("width"), image.get("height"))
         order = sorted(range(len(preds)), key=lambda i: -(preds[i][5] if preds[i][5] is not None else 1.0))
         P = [preds[i] for i in order]

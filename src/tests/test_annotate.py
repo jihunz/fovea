@@ -403,7 +403,7 @@ def ann(tmp_path_factory):
     d = tmp_path_factory.mktemp("annotate")
     static = ANNOTATE.parent.parent
     (d / "package.json").write_text('{"type": "module"}', encoding="utf-8")
-    for rel in ("views/annotate.js", "views/issues.js", "lib/media.js"):
+    for rel in ("views/annotate.js", "views/issues.js", "lib/media.js", "lib/annattrs.js"):
         (d / rel).parent.mkdir(parents=True, exist_ok=True)
         (d / rel).write_text((static / rel).read_text(encoding="utf-8"), encoding="utf-8")
     (d / "run.js").write_text(ANN_SCENARIOS, encoding="utf-8")

@@ -6,6 +6,7 @@
 // redrawn at most once per animation frame. Visual comfort (docs/visual-comfort.md): the current image stays until the
 // next one is decoded, then picture, boxes and every panel change in the same frame; waits show after 400 ms only.
 import { createFrameCache, decodedImage, thumbPx, trackImage } from '../lib/media.js';
+import { EMPTY as NO_ANN, annSchema, attrText, attrFilterText, regionLabel } from '../lib/annattrs.js';
 import { ISSUE_LABELS as BASE_ISSUE_LABELS } from './issues.js';
 
 export function install(fovea) {
@@ -338,7 +339,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   // Every list filter Explore can hand over (api/common.py FILTER_KEYS), so "Annotate this list" opens the same list.
   // `set` is a server-side working set (POST /sets → token): an ordered id list, like `ids` without its size limit;
   // it keeps its own order unless the link asks for another sort.
-  const FKEYS = ['split', 'cls', 'only_cls', 'labeled', 'review', 'exclude_review', 'issue', 'q', 'seq', 'ids', 'set', 'ai', 'min_boxes', 'max_boxes', 'has_label', 'seed'];
+  const FKEYS = ['split', 'cls', 'only_cls', 'labeled', 'review', 'exclude_review', 'issue', 'q', 'seq', 'ids', 'set', 'ai', 'min_boxes', 'max_boxes', 'has_label', 'seed', 'attr'];
   let filters = {}; for (const k of FKEYS) if (q0.get(k)) filters[k] = q0.get(k);
   // A link without a sort opens in the order its filters imply (initialSort: a QA-flag or audit list most suspicious
   // first). Such an implied sort follows the filters — opening a sequence shows it in index order, and going back
@@ -352,6 +353,10 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
   // sizeKnown: W × H is this image's size (decoded, or from the index when the file is missing), not a leftover.
   let idx = -1, item = null, img = null, imgFull = true, W = 1, H = 1, sizeKnown = false;
   let boxes = [], props = [], runs = {}, sel = null, hov = null, tool = 'select', activeCls = 0;
+  // Annotations converted from another format: regions that are not objects (drawn hatched, never selectable) and the
+  // attribute names of the dataset's format card (each label row carries its own attributes as row.attrs).
+  let regions = [], annSch = NO_ANN;
+  annSchema(fovea.api, ds).then((sch) => { if (sch === NO_ANN) return; annSch = sch; try { renderList(); renderInfo(); updateHud(); } catch (e) { /* view closed */ } });
   let scale = 1, tx = 0, ty = 0, fitScale = 1, customView = false, holdFit = false, prevDims = null, zoomBack = null;
   let corner = null;        // 2-click box mode: the first corner, in image pixels (survives zoom and pan)
   let undo = [], redo = [];
@@ -1098,6 +1103,16 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     g.strokeRect(r.x, r.y, r.w, r.h);
     if (dash) g.setLineDash([]);
   }
+  let hatch = null;
+  function hatchPattern() {
+    if (hatch) return hatch;
+    const t = document.createElement('canvas'); t.width = t.height = 8;
+    const c = t.getContext('2d');
+    c.fillStyle = 'rgba(20,20,20,.32)'; c.fillRect(0, 0, 8, 8);
+    c.strokeStyle = 'rgba(235,235,235,.55)'; c.lineWidth = 1; c.beginPath(); c.moveTo(0, 8); c.lineTo(8, 0); c.stroke();
+    hatch = gc.createPattern(t, 'repeat');
+    return hatch;
+  }
   function drawCache() {
     const cw = stage.clientWidth, ch = stage.clientHeight;
     gc.setTransform(1, 0, 0, 1, 0, 0); gc.clearRect(0, 0, cache.width, cache.height);
@@ -1114,6 +1129,15 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
       gc.lineDashOffset = 3; gc.lineWidth = 1; gc.strokeStyle = 'rgba(255,255,255,.95)';
       for (const r of rs) gc.strokeRect(r.x, r.y, r.w, r.h);
       gc.setLineDash([]); gc.lineDashOffset = 0;
+    }
+    if (regions.length) {
+      // Regions that are not objects (ignored regions, DontCare, crowds): hatched, dashed outline, never selectable.
+      gc.fillStyle = hatchPattern(); gc.setLineDash([4, 3]); gc.lineWidth = 1; gc.strokeStyle = 'rgba(235,235,235,.75)';
+      for (const g of regions) {
+        const r = rectOf([0, ...g.box]); if (r.x > cw || r.y > ch || r.x + r.w < 0 || r.y + r.h < 0) continue;
+        gc.fillRect(r.x, r.y, r.w, r.h); gc.strokeRect(r.x, r.y, r.w, r.h);
+      }
+      gc.setLineDash([]);
     }
     const fa = fillAlpha();
     for (let i = 0; i < boxes.length; i++) {
@@ -1720,6 +1744,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     const row = c != null ? [...b.slice(0, 5), c] : [...b.slice(0, 5)];   // keep a prediction file's confidence column
     const kind = res.row_kinds && res.row_kinds[i]; if (kind && kind !== 'box') row.kind = kind;
     const iss = res.row_issues && res.row_issues[i]; if (iss && iss.length) row.issues = iss;
+    const at = res.attrs && res.attrs[i]; if (at) row.attrs = at;
     return row;
   });
   /**
@@ -2033,6 +2058,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     } else if (it.width > 0 && it.height > 0) { W = it.width; H = it.height; sizeKnown = true; }   // file missing: the indexed size
     else sizeKnown = false;                        // never the size of the image shown before
     labelsError = labels.error || null;
+    regions = labelsError ? [] : (labels.regions || []);
     if (labelsError) { boxes = []; version = null; baseBoxes = []; savedCounts = {}; }
     else {
       version = labels.version ?? null;
@@ -2775,6 +2801,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     r._idx.textContent = String(i + 1);
     r._sw.style.background = classColor(b[0]);
     const nm = `${b[0]} · ${className(names, b[0])}`; if (r._name.textContent !== nm) r._name.textContent = nm;
+    r._name.title = b.attrs ? attrText(annSch, b.attrs) : '';
     r._geo.textContent = boxSizeText(b, sizeKnown ? W : 0, sizeKnown ? H : 0);
     r._geo.title = sizeKnown ? 'width × height in image pixels' : 'width × height as a share of the image (its size is not known)';
     r.classList.toggle('flagged', !!flagFocus && flagFocus.forId === (item && item.id) && flagFocus.refs.includes(b));
@@ -2955,6 +2982,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
       else if (k === 'seq') t = `Sequence: ${v}`;
       else if (k === 'ids') t = `${fmt.num(v.split(',').length)} selected images`;
       else if (k === 'set') t = 'Saved selection';
+      else if (k === 'attr') t = attrFilterText(annSch, v);
       out.push(ui.chip(t, { cls: 'outline' }));
     }
     return out;
@@ -3028,6 +3056,10 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     if (!item) { nameEl.replaceChildren(); nameEl._path = null; if (document.activeElement !== idxInput) idxInput.value = cursor.total ? '' : '0 / 0'; issuesRow.replaceChildren(); flagFocus = null; renderFlagInfo(); return; }
     const total = cursor.total;
     const rows = [['Name', item.rel_path.split('/').pop()], ['Split', item.split || '—'], ['Size', item.width ? `${item.width} × ${item.height}` : (img ? `${W} × ${H}` : '—')], ['Seq', item.seq || '—'], ['Position', `${fmt.num(idx + 1)} of ${fmt.num(total)}`], ['ID', `#${item.id}`]];
+    if (regions.length) {
+      const byKind = {}; regions.forEach(g => { byKind[g.kind] = (byKind[g.kind] || 0) + 1; });
+      rows.push(['Regions', Object.entries(byKind).map(([k, n]) => `${n} ${regionLabel(annSch, k).toLowerCase()}`).join(', ')]);
+    }
     rows.forEach(([k, v]) => { infoKv.appendChild(h('b', { class: 'faint' }, k)); infoKv.appendChild(h('span', { class: 'mono truncate', title: v }, v)); });
     issuesRow.replaceChildren();
     (item.issues || []).forEach(c => issuesRow.appendChild(ui.chip(issueLabel(c), { type: 'warn', icon: 'alert' })));
@@ -3244,6 +3276,8 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     const sNow = selectedItem();         // the class for new boxes; named so when a box of another class is selected
     chips.push([`${sNow && itemCls(sNow) !== activeCls ? 'new boxes: ' : ''}${activeCls} ${className(names, activeCls)}`, 'mono', classColor(activeCls)]);
     if (classBuf) chips.push([`class ${classBuf}_`, 'mono accent']);
+    const sBox = sNow && sNow.t === 'box' ? boxes[sNow.i] : null;
+    if (sBox && sBox.attrs) chips.push([attrText(annSch, sBox.attrs), 'ann-attrs']);    // occlusion, truncation … of the selected box
     if (hiddenAll) chips.push([peek ? 'Boxes hidden while O is held' : 'Boxes hidden (O)', 'warn']);
     if (hiddenCls.size) chips.push([`${hiddenCls.size} class${hiddenCls.size === 1 ? '' : 'es'} hidden`, 'warn']);
     if (opts.labels !== 'all') chips.push([opts.labels === 'off' ? 'Labels off (L)' : 'Labels: selected (L)', '']);
@@ -3260,7 +3294,7 @@ async function render(el, { ctx, dataset, fovea, refresh }) {
     const sig = JSON.stringify(chips);
     if (sig === hudSig) return;
     hudSig = sig;
-    hud.replaceChildren(...chips.map(([t, c, sw]) => { const e = ui.chip(t, { cls: c }); if (sw) e.prepend(h('span', { class: 'swatch', style: `background:${sw}` })); if (c.startsWith('flag-legend')) e.prepend(h('span', { class: 'ann-legend-dash', 'aria-hidden': 'true' })); return e; }));
+    hud.replaceChildren(...chips.map(([t, c, sw]) => { const e = ui.chip(t, { cls: c, title: c === 'ann-attrs' ? t : undefined }); if (sw) e.prepend(h('span', { class: 'swatch', style: `background:${sw}` })); if (c.startsWith('flag-legend')) e.prepend(h('span', { class: 'ann-legend-dash', 'aria-hidden': 'true' })); return e; }));
   }
   function note(text, kind = 'info', sticky = false) {
     clearTimeout(noteTimer);

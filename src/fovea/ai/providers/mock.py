@@ -72,7 +72,7 @@ class MockProvider(Provider):
     location = "Deterministic fake answers — nothing leaves this machine"
     needs_key = False
     capabilities = {"detect": True, "classify": True, "refine": False, "open_vocab": True, "exemplars": False,
-                    "batch_api": True, "confidence": True, "generate": True}
+                    "batch_api": True, "confidence": True, "generate": True, "web_search": True}
 
     def models(self, refresh: bool = False) -> List[dict]:
         return [
@@ -212,6 +212,11 @@ class MockProvider(Provider):
             out = _mock_filters(system, user)
         elif "sources" in props:
             out = _mock_folders(user)
+        elif "geometry_columns" in props:
+            out = _mock_format(user, bool(opts.get("web_search")))
+        elif "published" in props:             # ai/formats.py: is this a published dataset? (private_* folders: no)
+            private = "private" in user.lower()
+            out = {"dataset": "" if private else "Mock dataset", "published": not private, "confidence": 0.9}
         elif "classes" in props:
             out = {"classes": [_mock_name(block) for block in _class_blocks(user)]}
         elif "name" in props:
@@ -316,7 +321,7 @@ def _schema_default(v: dict):
     return {"string": "", "number": 0.5, "integer": 0, "boolean": False, "array": [], "object": {}}.get(t, None)
 
 
-_FOLDER_LINE = re.compile(r"^(\S+)\s+images=(\d+) txt=(\d+)")
+_FOLDER_LINE = re.compile(r"^(\S+)\s+images=(\d+) txt=(\d+)(.*)$")
 
 
 def _mock_folders(user: str) -> dict:
@@ -324,8 +329,9 @@ def _mock_folders(user: str) -> dict:
     folder; its labels are the .txt folder sharing the most trailing path parts (imgs/train ↔ anns/train), the split
     the image folder's last part when it reads like one."""
     rows = [m.groups() for m in map(_FOLDER_LINE.match, user.splitlines()) if m]
-    imgs = [r for r, n, _t in rows if int(n) > 0]
-    txts = [r for r, _n, t in rows if int(t) > 0]
+    imgs = [r for r, n, _t, _x in rows if int(n) > 0]
+    txts = [r for r, _n, t, x in rows if int(t) > 0 and "not YOLO" not in x]
+    anns = [r for r, _n, t, x in rows if (int(t) > 0 and "not YOLO" in x) or " xml=" in x or " json=" in x]
 
     def shared(a: str, b: str) -> tuple:
         pa, pb, head, tail = a.split("/"), b.split("/"), 0, 0
@@ -338,9 +344,67 @@ def _mock_folders(user: str) -> dict:
     out = []
     for r in imgs:
         lab = max(txts, key=lambda t: (shared(r, t), t == r)) if txts else ""
+        ann = "" if lab else (max(anns, key=lambda t: (shared(r, t), t == r)) if anns else "")
         last = r.split("/")[-1].lower()
-        out.append({"split": last if last in ("train", "val", "valid", "test") else "", "images": r, "labels": lab})
+        out.append({"split": last if last in ("train", "val", "valid", "test") else "", "images": r, "labels": lab,
+                    "annotations": ann})
     return {"sources": out, "reason": "mock: folders with images, paired with the closest .txt folder"}
+
+
+def _mock_format(user: str, web: bool) -> dict:
+    """A reading rule from the sample lines ai/formats.py sends: the delimiter seen, the first four numeric columns
+    as the box (two corners when every row's third / fourth value exceeds its first / second, else left-top-size),
+    the first non-numeric column as class names, small integer columns after the box as attributes."""
+    lines, inside = [], False
+    for ln in user.splitlines():                    # only the sample files: "--- name" then its lines, to a blank
+        if ln.startswith("--- "):
+            inside = True
+        elif not ln.strip():
+            inside = False
+        elif inside:
+            lines.append(ln)
+    rows = []
+    for ln in lines:
+        d = "," if "," in ln else ";" if ";" in ln else "\t" if "\t" in ln else " "
+        toks = [t.strip() for t in (ln.split() if d == " " else ln.split(d))]
+        if len(toks) >= 5:
+            rows.append((d, toks))
+    if not rows:
+        return {"dataset": "", "format_name": "", "delimiter": "space", "header_prefixes": [], "geometry": "ltwh",
+                "geometry_columns": [], "units": "pixel", "class_column": -1, "classes": [], "regions": [],
+                "attributes": [], "urls": [], "license": "", "citation": "", "notes": "", "confidence": 0.0}
+    delim = rows[0][0]
+    toks = [t for _d, t in rows]
+    n = min(len(t) for t in toks)
+
+    def num(s):
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return False
+    numeric = [all(num(t[i]) for t in toks) for i in range(n)]
+    start = next((i for i in range(n - 3) if all(numeric[i:i + 4])), None)
+    if start is None:
+        return _mock_format("", web)
+    cols = list(range(start, start + 4))
+    vals = [[float(t[c]) for c in cols] for t in toks]
+    xyxy = all(v[2] > v[0] and v[3] > v[1] for v in vals)
+    ccol = next((i for i in range(n) if not numeric[i]), -1)
+    names = sorted({t[ccol] for t in toks}) if ccol >= 0 else []
+    attrs = []
+    for i in range(start + 4, n):
+        if numeric[i] and all(t[i].isdigit() for t in toks) and len({t[i] for t in toks}) <= 3:
+            attrs.append({"name": f"flag_{i}", "column": i,
+                          "values": [{"value": v, "meaning": f"level {v}"} for v in sorted({t[i] for t in toks})]})
+    return {"dataset": "Mock dataset" if web else "", "format_name": "mock delimited",
+            "delimiter": {",": "comma", ";": "semicolon", "\t": "tab"}.get(delim, "space"), "header_prefixes": [],
+            "geometry": "xyxy" if xyxy else "ltwh", "geometry_columns": cols,
+            "units": "pixel" if any(x > 1.5 for v in vals for x in v) else "normalized",
+            "class_column": ccol, "classes": [{"value": c, "name": c, "definition": f"A {c}."} for c in names],
+            "regions": [], "attributes": attrs,
+            "urls": ["https://example.org/mock-dataset/annotation-format"] if web else [],
+            "license": "", "citation": "", "notes": "mock", "confidence": 0.8}
 
 
 def _class_blocks(text: str) -> List[str]:

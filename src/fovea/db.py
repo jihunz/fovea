@@ -188,6 +188,25 @@ CREATE TABLE IF NOT EXISTS class_cards (
   updated_at REAL,
   PRIMARY KEY(dataset_id, cls)
 );
+-- Annotations converted from another format (core.annformats / core.annindex): each box's attributes while it keeps
+-- the geometry it was converted with (occlusion, truncation …), and the image's regions that are not objects
+-- (ignored regions, DontCare, crowds). Both are re-read from the conversion's sidecar after every scan and save.
+CREATE TABLE IF NOT EXISTS box_attrs (
+  box_id INTEGER PRIMARY KEY REFERENCES boxes(id) ON DELETE CASCADE,
+  image_id INTEGER NOT NULL,
+  dataset_id TEXT NOT NULL,
+  attrs TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_box_attrs_ds ON box_attrs(dataset_id, image_id);
+CREATE TABLE IF NOT EXISTS image_regions (
+  id INTEGER PRIMARY KEY,
+  image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+  dataset_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  xc REAL NOT NULL, yc REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_regions_image ON image_regions(image_id);
+CREATE INDEX IF NOT EXISTS idx_regions_ds ON image_regions(dataset_id, image_id);
 -- Working sets: an ordered image-id list frozen server-side (Explore "all matching", large selections), used by
 -- every image filter as `set=<token>`. Kept 24 h after last use (core.imagesq).
 CREATE TABLE IF NOT EXISTS work_sets (
@@ -468,7 +487,7 @@ def init_db() -> None:
 # table). Every job that inserts or deletes many rows calls refresh_planner_stats() at its end; read paths call
 # maybe_refresh_planner_stats(), which re-checks in the background at most once a minute.
 VOLATILE_TABLES = ("images", "boxes", "reviews", "ai_runs", "ai_preds", "ai_audit", "image_flags", "image_hash",
-                   "work_set_items")
+                   "work_set_items", "box_attrs", "image_regions")
 SMALL_TABLE_ROWS = 1000          # below this, no statistics at all: SQLite's defaults favour the indexes
 STATS_DRIFT = 2.0                # re-analyse when the row count grew or shrank by this factor (plus slack)
 SELECTIVITY_PROBE = 256          # distinct leading-index values counted per check (index seeks, not a scan)

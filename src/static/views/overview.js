@@ -615,10 +615,37 @@ async function render(el, { dataset, fovea, refresh }) {
           cellPath(s.list_file_host || s.img_dir_host),
           s.list_file ? h('td', { class: 'small muted' }, 'next to each image (images → labels)') : cellPath(s.label_dir_host, s.label_dir_exists ? null : ui.chip('will be created', { cls: 'outline' }))))))),
       (lay.notes || []).length ? h('div', { class: 'col gap-4 mt-12' }, lay.notes.map(n => h('div', { class: 'callout small' }, icon('info', 14), h('span', n)))) : null,
+      formatSection(lay),
       h('div', { class: 'row wrap mt-12 small muted' }, icon('fileText', 14), lay.data_yaml_host ? h('span', { class: 'grow', style: 'min-width:0;display:flex' }, ui.pathText(lay.data_yaml_host, { tail: 30 })) : h('span', { class: 'grow' }, 'No data.yaml'),
         h('button', { class: 'btn btn-sm', onClick: writeYaml }, icon('save', 13), lay.data_yaml ? 'Rewrite data.yaml…' : 'Write data.yaml…')),
       scanSection(withoutLayoutDupes(scanReport(ds.last_scan), lay.notes), rel));
     put(datasetActions, h('a', { class: 'btn btn-sm', href: `/api/datasets/${enc}/card.md`, download: '', 'data-external': '', 'data-tip': 'DATASET_CARD.md — splits, classes with their cards, data quality, review progress and label issues' }, icon('fileText', 12), 'Dataset card'));
+  }
+  /** Annotations converted from another format: the format card (where its reading rule came from, the official
+      links, licence and citation), the counts, and "Convert again" (replaces edits; a label version is saved first). */
+  function formatSection(lay) {
+    const fmts = Object.entries(lay.formats || {}).filter(([, f]) => f.state === 'converted' || f.state === 'pending');
+    if (!fmts.length) return null;
+    const SRC = { catalog: 'built-in format', ai: 'reading rule written by AI from sample lines', web: 'reading rule from the official documentation' };
+    return h('div', { class: 'col gap-8 mt-12' }, fmts.map(([fid, f]) => {
+      const c = f.card || {}, n = f.counts || {};
+      return h('div', { class: 'fmt-box col gap-4' },
+        h('div', { class: 'row wrap gap-6' }, ui.chip(c.name || fid, { icon: 'fileText', type: 'accent' }), h('span', { class: 'small muted grow' }, `Annotations converted to YOLO · ${SRC[c.source] || c.source || ''}`),
+          f.state === 'converted' ? h('button', { class: 'btn btn-sm', 'data-tip': 'Write the YOLO labels again from the original annotation files. Edits made here are replaced; a label version is saved first.', onClick: () => reconvert(c.name || fid) }, icon('refresh', 12), 'Convert again') : ui.chip('converted on the next index', { cls: 'outline' })),
+        n.labels != null ? h('div', { class: 'small muted' }, `${fmt.num(n.labels)} label files · ${fmt.num(n.boxes || 0)} boxes${n.regions ? ` · ${fmt.num(n.regions)} regions` : ''}${n.missing ? ` · ${fmt.num(n.missing)} images without an annotation` : ''}${n.unknown ? ` · ${fmt.num(n.unknown)} entries of unknown classes skipped` : ''}`) : null,
+        (c.urls || []).length ? h('div', { class: 'row wrap gap-8 small' }, icon('external', 12), c.urls.slice(0, 3).map(u => h('a', { href: u, target: '_blank', rel: 'noopener noreferrer', 'data-external': '' }, u.replace(/^https?:\/\//, '').replace(/\/$/, '')))) : null,
+        c.model ? h('div', { class: 'xs faint' }, `Reading rule written by ${c.model}${c.usd != null && !c.cached ? ` ($${Number(c.usd).toFixed(c.usd < 0.1 ? 3 : 2)})` : ''}`) : null,
+        c.citation ? h('div', { class: 'xs faint' }, `Cite: ${c.citation}`) : null,
+        c.license ? h('div', { class: 'xs faint' }, `Licence: ${c.license}`) : null,
+        c.notes ? h('div', { class: 'xs faint' }, c.notes) : null);
+    }));
+  }
+  async function reconvert(name) {
+    const ok = await ui.confirm({ title: `Convert the ${name} annotations again?`, okLabel: 'Convert again', danger: true,
+      message: 'The YOLO labels are written again from the original annotation files, then the dataset is re-indexed. Edits made in Fovea to these labels are replaced — a label version is saved first, so History → Restore brings them back.' });
+    if (!ok) return;
+    try { await api.post(`/api/datasets/${enc}/annotations/reconvert`); ui.toast('Converting the original annotations again…', { type: 'ok' }); fovea.jobs && fovea.jobs.refresh && fovea.jobs.refresh(); }
+    catch (e) { ui.toast(fovea.plainError(e), { type: 'error' }); }
   }
   // The latest index's report: one line, collapsed by default; problems with counts and up to five examples each.
   let scanOpen = false;

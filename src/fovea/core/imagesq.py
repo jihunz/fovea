@@ -96,6 +96,20 @@ ENUM_KEYS = ("labeled", "review", "exclude_review", "ai", "has_label")
 _INT_KEYS = ("cls", "only_cls", "ids")                       # CSV of ids >= 0
 _COUNT_KEYS = ("min_boxes", "max_boxes")                     # one integer
 _TEXT_KEYS = ("split", "q", "seq", "issue", "set")            # free text: a value nothing has already matches nothing
+# attr: "name:value" pairs (CSV) — images with a box whose converted attribute has that value (core.annindex), or
+# "region:kind" — images with such a region. Values of one name are alternatives; different names must all match.
+_ATTR_RE = re.compile(r"^([\w .\-]{1,64}):(.{1,80})$")
+
+
+def attr_pairs(v: Any) -> Optional[List[Tuple[str, str]]]:
+    """[(name, value)] of an attr filter, or None when a token is not name:value."""
+    out = []
+    for tok in _csv(v if not isinstance(v, (list, tuple)) else ",".join(str(x) for x in v)):
+        m = _ATTR_RE.match(tok)
+        if not m:
+            return None
+        out.append((m.group(1).strip(), m.group(2).strip()))
+    return out
 
 
 def _absent(v: Any) -> bool:
@@ -166,6 +180,10 @@ def filter_problem(key: str, v: Any) -> Optional[str]:
         ok = _id_list(v) is not None
     elif key in _COUNT_KEYS:
         ok = _count(v) is not None
+    elif key == "attr":
+        if attr_pairs(v) is None:
+            return f"Unknown attr filter value {str(v)[:80]!r} — use name:value pairs, e.g. occlusion:2 or region:ignored"
+        return None
     else:
         return None
     if ok:
@@ -288,6 +306,23 @@ def build_where(dataset_id: str, f: Dict[str, Any]) -> Tuple[str, List[Any]]:
         clause, args = _issue_clause(issues, dataset_id)
         where.append(clause)
         params.extend(args)
+
+    pairs = attr_pairs(f.get("attr")) if not _absent(f.get("attr")) else []
+    if pairs is None:
+        where.append("0")
+    else:
+        by_name: Dict[str, List[str]] = {}
+        for name, value in pairs:
+            by_name.setdefault(name, []).append(value)
+        for name, values in by_name.items():
+            marks = ",".join("?" * len(values))
+            if name == "region":
+                where.append(f"+i.id IN (SELECT g.image_id FROM image_regions g WHERE g.dataset_id = ? AND g.kind IN ({marks}))")
+                params.extend([dataset_id] + values)
+            else:
+                where.append("+i.id IN (SELECT a.image_id FROM box_attrs a WHERE a.dataset_id = ? AND "
+                             f"CAST(json_extract(a.attrs, ?) AS TEXT) IN ({marks}))")
+                params.extend([dataset_id, '$."' + name.replace('"', "") + '"'] + values)
 
     # Flags and AI rows are matched with an uncorrelated IN (...) over this dataset's rows, read from a covering
     # index once per query — not a probe per image — so the cost does not depend on the planner's statistics.
@@ -786,7 +821,7 @@ def neighbor(dataset_id: str, f: Dict[str, Any], current_id: int, direction: str
 # exactly how many images picking it would show. Facets whose key is not active all share one WHERE clause; an
 # active facet gets its own (the filters without itself). Results are cached per data version + filters.
 
-FACET_KEYS = ("split", "review", "labeled", "cls", "issue", "ai")
+FACET_KEYS = ("split", "review", "labeled", "cls", "issue", "ai", "attr")
 FACET_TTL = 120.0
 FACET_CACHE_MAX = 64
 _facet_cache: Dict[tuple, Tuple[float, dict]] = {}
@@ -808,14 +843,17 @@ def _versions(dataset_id: str) -> Dict[str, tuple]:
     ai = db.query_one("SELECT COUNT(*) n, MAX(id) m, TOTAL(state = 'pending') p FROM ai_preds WHERE dataset_id=?",
                       (dataset_id,)) or {}
     fl = db.query_one("SELECT COUNT(*) n, TOTAL(rowid) s FROM image_flags WHERE dataset_id=?", (dataset_id,)) or {}
-    return {"images": tuple(ds.values()), "reviews": tuple(rv.values()), "ai": tuple(ai.values()), "flags": tuple(fl.values())}
+    at = db.query_one("SELECT COUNT(*) n, TOTAL(box_id) s, (SELECT COUNT(*) FROM image_regions g WHERE g.dataset_id=?) "
+                      "r FROM box_attrs WHERE dataset_id=?", (dataset_id, dataset_id)) or {}
+    return {"images": tuple(ds.values()), "reviews": tuple(rv.values()), "ai": tuple(ai.values()),
+            "flags": tuple(fl.values()), "attrs": tuple(at.values())}
 
 
 def data_version(dataset_id: str) -> tuple:
     """Cheap fingerprint of everything an image query can depend on: the label index (every label write and scan
     bumps datasets.updated_at / counts), review marks, pending AI rows and QA flags. A few index-only aggregates."""
     v = _versions(dataset_id)
-    return v["images"], v["reviews"], v["ai"], v["flags"]
+    return v["images"], v["reviews"], v["ai"], v["flags"], v["attrs"]
 
 
 # Per-image facts from the small side tables (QA flags, pending AI rows, review marks), read once per change of
@@ -840,6 +878,19 @@ def _side_map(dataset_id: str, kind: str, version: tuple) -> dict:
         for iid, k in conn.execute("SELECT q.image_id, q.kind FROM ai_preds q WHERE q.dataset_id = ? AND q.state = 'pending'",
                                    (dataset_id,)):
             out.setdefault(iid, set()).add(k)
+    elif kind == "attr":
+        # every "name:value" of the image's converted box attributes (enumerations only), and its "region:kind"s
+        for iid, raw in conn.execute("SELECT a.image_id, a.attrs FROM box_attrs a WHERE a.dataset_id = ?", (dataset_id,)):
+            try:
+                d = json.loads(raw)
+            except ValueError:
+                continue
+            got = out.setdefault(iid, set())
+            for k, v in d.items():
+                if isinstance(v, str) and len(v) <= 40:
+                    got.add(f"{k}:{v}")
+        for iid, k in conn.execute("SELECT g.image_id, g.kind FROM image_regions g WHERE g.dataset_id = ?", (dataset_id,)):
+            out.setdefault(iid, set()).add(f"region:{k}")
     else:
         for iid, status in conn.execute("""SELECT i.id, r.status FROM reviews r JOIN images i ON i.dataset_id = r.dataset_id
                                            AND i.rel_path = r.rel_path WHERE r.dataset_id = ? AND r.status IS NOT NULL""",
@@ -871,7 +922,7 @@ def facets_cached(dataset_id: str, f: Dict[str, Any], use_cache: bool = True) ->
     db.maybe_refresh_planner_stats()
     key = (dataset_id, tuple(sorted((k, str(v)) for k, v in f.items() if k != "seed")))
     versions = _versions(dataset_id)
-    version = (versions["images"], versions["reviews"], versions["ai"], versions["flags"])
+    version = (versions["images"], versions["reviews"], versions["ai"], versions["flags"], versions["attrs"])
     now = time.time()
     if use_cache:
         with _facet_lock:
@@ -1004,6 +1055,16 @@ def _compute_facets(dataset_id: str, f: Dict[str, Any], versions: Optional[Dict[
             pend += any(k in AI_PROPOSAL_KINDS for k in kinds)
             audit += any(k in kind_code for k in kinds)
     out["ai"] = {"pending": pend, "audit": audit, "any": anyp, "none": sc["total"] - anyp}
+
+    attr_map = _side_map(dataset_id, "attr", versions["attrs"])
+    if attr_map:
+        sc = scan_for("attr")
+        at: Dict[str, int] = {}
+        for iid, toks in attr_map.items():
+            if iid in sc["ids"]:
+                for t in toks:
+                    at[t] = at.get(t, 0) + 1
+        out["attr"] = at
 
     out["total"] = scan_for(None)["total"]
     return out

@@ -412,7 +412,7 @@ def rescan(ds_id: str, payload: Optional[dict] = Body(None), request: Request = 
             raise HTTPException(400, f"Re-detect failed: {e}")
         if lay.sources:
             db.execute("UPDATE datasets SET layout=? WHERE id=?", (db.dumps(lay.to_dict()), ds_id))
-            if lay.classes and row.get("classes_source") in ("inferred", "yaml", "file"):
+            if lay.classes and row.get("classes_source") in ("inferred", "yaml", "file", "format"):
                 db.execute("UPDATE datasets SET classes=?, classes_source=? WHERE id=?",
                            (db.dumps(lay.classes), lay.classes_from or ("yaml" if lay.data_yaml else "file"), ds_id))
     job = jobs.submit("scan", _scan_job(ds_id), dataset_id=ds_id, message="Queued")
@@ -460,6 +460,49 @@ def class_cards(ds_id: str) -> Dict[int, dict]:
     for cls in sorted(set(range(len(names))) | set(stored)):
         out[cls] = _card_public(stored.get(cls), names[cls] if 0 <= cls < len(names) else f"class_{cls}")
     return out
+
+
+@router.get("/{ds_id}/annotations")
+def get_annotation_formats(ds_id: str):
+    """The dataset's annotation formats converted from (or waiting for conversion): each format card's source,
+    official links and counts, the per-box attributes with how many boxes carry each value, and the regions."""
+    get_dataset_or_404(ds_id)
+    from ..core import annindex
+    out = annindex.schema(ds_id)
+    counts: Dict[str, Dict[str, int]] = {}
+    for r in db.query("SELECT j.key AS k, CAST(j.value AS TEXT) AS v, COUNT(*) AS n FROM box_attrs a, json_each(a.attrs) j "
+                      "WHERE a.dataset_id=? GROUP BY j.key, CAST(j.value AS TEXT)", (ds_id,)):
+        counts.setdefault(r["k"], {})[r["v"]] = r["n"]
+    out["counts"] = counts
+    out["region_counts"] = {r["kind"]: {"regions": r["n"], "images": r["m"]} for r in db.query(
+        "SELECT kind, COUNT(*) n, COUNT(DISTINCT image_id) m FROM image_regions WHERE dataset_id=? GROUP BY kind",
+        (ds_id,))}
+    return out
+
+
+@router.post("/{ds_id}/annotations/reconvert")
+def reconvert_annotations(ds_id: str, request: Request = None):
+    """Write the YOLO labels again from the original annotations (edits made in Fovea to converted labels are
+    replaced). A label version is saved first, so History → Restore brings the edits back."""
+    row = get_dataset_or_404(ds_id)
+    if jobs.active_for(ds_id, "scan"):
+        raise HTTPException(409, "The dataset is being indexed — try again when it finishes")
+    from ..core import annformats as af
+    from ..core import snapshots
+    from ..core.layout import Layout
+    lay = Layout.from_dict(db.loads(row["layout"], {}))
+    srcs = [s for s in lay.sources if s.ann_format and s.ann_path and s.label_dir and Path(s.ann_path).exists()]
+    if not srcs:
+        raise HTTPException(400, "This dataset has no annotations converted from another format")
+    sid = snapshots.snapshot_dataset(ds_id, name="Before converting the original annotations again", kind="auto",
+                                     op="reconvert")
+    for s in srcs:
+        m = af.read_marker(Path(s.label_dir))
+        if m:
+            m["state"] = "converting"
+            af._write_json(Path(s.label_dir) / af.MARKER, m)
+    job = jobs.submit("scan", _scan_job(ds_id), dataset_id=ds_id, message="Queued")
+    return {"job": job.to_dict(), "snapshot_id": sid}
 
 
 @router.get("/{ds_id}/classes/cards")
@@ -658,10 +701,15 @@ def get_labels(ds_id: str, image_id: int):
     det = read_label_details(lp, _n_classes(row)) if lp and lp.is_file() else None
     if det is None:
         det = {"boxes": [], "confs": [], "issues": set(), "row_issues": [], "row_kinds": [], "version": None}
+    from ..core import annindex
+    attrs = annindex.attrs_for_rows(ds_id, str(lp) if lp else "", det["boxes"])
     return {"image_id": image_id, "boxes": det["boxes"], "confs": det["confs"], "issues": sorted(det["issues"]),
             "exists": det["version"] is not None, "version": det["version"],
             # Which box each issue belongs to, and which rows are polygons / keypoints (geometry-locked).
             "row_issues": det["row_issues"], "row_kinds": det["row_kinds"],
+            # Annotations converted from another format: each row's attributes (occlusion …) while it keeps its
+            # converted geometry, and the image's regions that are not objects (ignored regions, DontCare …).
+            "attrs": attrs if any(attrs) else None, "regions": annindex.regions_in(image_id),
             "label_path": str(lp) if lp else None, "label_path_host": to_host(lp) if lp else None}
 
 

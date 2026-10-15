@@ -1812,7 +1812,7 @@ _FILTER_LABELS = {"split": "Split", "cls": "Contains class", "only_cls": "Only c
                   "review": "Review status", "exclude_review": "Review status is not", "issue": "Issue",
                   "q": "Path contains", "seq": "Sequence", "ids": "Selected images", "min_boxes": "At least boxes",
                   "max_boxes": "At most boxes", "has_label": "Has a label file", "ai": "AI suggestions",
-                  "set": "Saved selection"}
+                  "set": "Saved selection", "attr": "Attribute"}
 _REVIEW_ROWS = (("approved", "Approved"), ("flagged", "Flagged"), ("excluded", "Excluded"), (None, "Not reviewed"))
 
 

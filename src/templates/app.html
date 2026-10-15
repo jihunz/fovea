@@ -10,7 +10,7 @@
       offline. fovea.css uses the system UI and monospace stacks (Inter / JetBrains Mono when installed). -#}
   {%- set v = asset_version or (config_json|length) %}
   {%- set mods = ['lib/dom.js', 'lib/icons.js', 'lib/store.js', 'lib/api.js', 'lib/router.js', 'lib/ui.js', 'lib/colors.js', 'lib/overlay.js',
-                  'lib/cursor.js', 'lib/media.js', 'lib/comfort.js', 'lib/keys.js', 'lib/classnames.js',
+                  'lib/cursor.js', 'lib/media.js', 'lib/comfort.js', 'lib/keys.js', 'lib/classnames.js', 'lib/annattrs.js',
                   'views/home.js', 'views/dataset.js', 'views/overview.js', 'views/explore.js', 'views/objects.js', 'views/annotate.js',
                   'views/ai.js', 'views/ai-panel.js', 'views/files.js', 'views/export.js', 'views/settings.js', 'views/issues.js'] %}
   {#- Every module URL carries the content version, so a warm load is served from cache without ~30 revalidations;
@@ -21,7 +21,7 @@
   <link rel="stylesheet" href="/static/css/explore.css?v={{ v }}" />
   <link rel="stylesheet" href="/static/css/objects.css?v={{ v }}" />
   <link rel="stylesheet" href="/static/css/ai.css?v={{ v }}" />
-  {%- for m in mods[:14] %}
+  {%- for m in mods[:15] %}
   <link rel="modulepreload" href="/static/{{ m }}?v={{ v }}" />
   {%- endfor %}
   <script>

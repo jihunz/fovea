@@ -326,18 +326,26 @@ export function openAddDataset(prefillPath = '') {
 
   /** `ai`: folders not named images/ and labels/ are identified by an AI provider (Settings → AI). Detection while
       typing never asks one (a half-typed path may be a home folder); Detect, Enter, Browse and Register do. */
+  let inflight = null;            // {path, ai} of the detection under way
   async function detect(force = false, ai = true) {
     const p = pathInput.value.trim();
     if (!p) { put(result); detected = null; detectedPath = null; registerBtn.disabled = true; return null; }
     if (!force && p === detectedPath && detected && (detectedAi || !ai)) return detected;
+    // A name-only detection (typing paused) never cancels an AI one already reading this path (Enter, Detect).
+    if (!ai && inflight && inflight.ai && inflight.path === p) return null;
     const my = ++seq;
+    inflight = { path: p, ai };
     if (ctrl) ctrl.abort();
     ctrl = new AbortController();
     detectBtn.disabled = true; registerBtn.disabled = true;
     const clock = ui.elapsedClock();
     const cancelBtn = h('button', { class: 'btn btn-sm btn-ghost', hidden: true, onClick: () => { if (ctrl) ctrl.abort(); } }, 'Cancel');
     setTimeout(() => { if (my === seq && cancelBtn.isConnected) cancelBtn.hidden = false; }, 2000);
-    put(result, h('div', { class: 'row small faint' }, ui.spinner(), h('span', 'Detecting the layout…'), clock, cancelBtn));
+    // An unknown folder layout or annotation format is read by an AI provider (with a web search for a published
+    // dataset's documentation): that takes tens of seconds the first time; the answer is kept afterwards.
+    const slowNote = h('div', { class: 'xs faint', hidden: true }, ai ? 'Unknown folders or annotation formats are read by AI — with a web search for a published dataset’s documentation. This can take up to a minute the first time.' : '');
+    setTimeout(() => { if (my === seq && slowNote.isConnected && ai) slowNote.hidden = false; }, 4000);
+    put(result, h('div', { class: 'col gap-4' }, h('div', { class: 'row small faint' }, ui.spinner(), h('span', 'Detecting the layout…'), clock, cancelBtn), slowNote));
     try {
       const res = await F.api.get('/api/fs/detect', { path: p, ai: ai ? 1 : 0 }, { signal: ctrl.signal });
       if (my !== seq) return null;
@@ -358,7 +366,7 @@ export function openAddDataset(prefillPath = '') {
           total ? h('span', { class: 'small strong nowrap' }, `${fmt.num(total)}${capped ? '+' : ''} images`) : null),
         lay.sources.length ? h('div', { class: 'table-scroll' }, h('table', { class: 'table' }, h('thead', h('tr', h('th', 'Split'), h('th', { class: 'num' }, 'Images'), h('th', { class: 'num' }, 'Labels'), h('th', 'Source'))),
           h('tbody', lay.sources.map(s => h('tr', h('td', { class: 'truncate', style: 'max-width:160px', title: s.split || '' }, s.split || h('span', { class: 'faint' }, '—')), h('td', { class: 'num' }, fmt.num(s.image_count) + (s.count_capped ? '+' : '')),
-            h('td', { class: 'num' }, s.list_file ? 'auto' : (s.label_dir_exists ? fmt.num(s.label_count) : h('span', { class: 'faint' }, 'none'))),
+            h('td', { class: 'num' }, s.list_file ? 'auto' : s.ann_format && !s.label_dir_exists ? h('span', { class: 'small muted', title: 'Converted from the annotations when you register' }, 'converted') : (s.label_dir_exists ? fmt.num(s.label_count) : h('span', { class: 'faint' }, 'none'))),
             h('td', { class: 'name-cell' }, ui.pathText(relTo(s.list_file_host || s.img_dir_host, res.path_host || lay.root_host), { tail: 24 }))))))) : null,
         lay.kind === 'collection' && (lay.candidates || []).length ? h('div', { class: 'col gap-6' },
           h('span', { class: 'small muted' }, 'This folder holds several datasets. Pick one:'),
@@ -367,7 +375,8 @@ export function openAddDataset(prefillPath = '') {
         : bad ? h('div', { class: 'callout danger small' }, icon('alertCircle', 14), h('span', `No images were found in a layout Fovea knows. Pick the dataset folder (the one with images/ and labels/), its data.yaml, or a train.txt list.${detectedAi ? '' : ' Press Detect to let AI identify folders with other names.'}`))
           : lay.classes.length ? h('div', { class: 'row wrap gap-4' }, h('span', { class: 'small muted' }, `Classes (${lay.classes.length}):`), lay.classes.slice(0, 40).map((c, i) => ui.chip(`${i} ${c}`, { cls: 'outline' })), lay.classes.length > 40 ? h('span', { class: 'small faint' }, `+${lay.classes.length - 40} more`) : null)
             : h('div', { class: 'small faint' }, 'No class names found — they will be inferred from the labels (you can name them later in Overview).'),
-        (lay.notes || []).map(n => h('div', { class: 'callout small' }, icon('info', 14), h('span', n))),
+        formatBlock(lay, res.previews || {}, detectedAi),
+        (lay.notes || []).filter(n => !/^Annotations (in |Fovea could not read)/.test(n)).map(n => h('div', { class: 'callout small' }, icon('info', 14), h('span', n))),
       ));
       registerBtn.disabled = bad;
       return res;
@@ -377,7 +386,7 @@ export function openAddDataset(prefillPath = '') {
       put(result, e && e.name === 'AbortError' ? h('div', { class: 'small faint' }, 'Detection cancelled.') : h('div', { class: 'callout danger small' }, icon('alertCircle', 14), h('span', F.plainError(e))));
       registerBtn.disabled = true;
       return null;
-    } finally { if (my === seq) { detectBtn.disabled = false; clock.stop(); } }
+    } finally { if (my === seq) { detectBtn.disabled = false; clock.stop(); inflight = null; } }
   }
   const detectSoon = F.debounce(() => detect(false, false), 700);
   /** The folder mapping shown, to tell whether an AI re-detect at Register changed it. */
@@ -454,6 +463,46 @@ function relTo(p, root) {
   if (!p) return '';
   const r = (root || '').replace(/\/+$/, '');
   return r && p.startsWith(r + '/') ? p.slice(r.length + 1) : p;
+}
+
+const FORMAT_SOURCE = { catalog: 'built-in format', ai: 'reading rule written by AI from sample lines', web: 'reading rule from the official documentation (found by AI)' };
+
+/** Annotations in another format than YOLO: what they are, where the reading rule came from (with the official
+    links), how the check on real files went, the classes and attributes, and sample images with the converted boxes
+    drawn on them — before anything is written. */
+function formatBlock(lay, previews, detectedAi) {
+  const { h, icon, ui, fmt } = F;
+  const fmts = Object.entries(lay.formats || {});
+  if (!fmts.length) return null;
+  return h('div', { class: 'col gap-8' }, fmts.map(([fid, f]) => {
+    const card = f.card || {};
+    if (f.state === 'unreadable') {
+      return h('div', { class: 'callout warn small' }, icon('alert', 14), h('span',
+        `Annotations next to the images are in a format Fovea could not read${f.why ? ` (${f.why})` : ''}. The images are indexed without labels; the original files are not touched.`,
+        detectedAi ? ' In Settings → AI, “Read annotation formats” lets an AI read unknown formats.' : ' Press Detect to let AI read them.'));
+    }
+    if (f.state === 'converted') {
+      return h('div', { class: 'small muted row gap-6' }, icon('check', 13), `Labels converted earlier from ${card.name || fid} annotations${f.counts && f.counts.boxes != null ? ` (${fmt.num(f.counts.boxes)} boxes)` : ''}.`);
+    }
+    const ck = f.check || {};
+    const attrs = ((card.spec || {}).attributes || card.attributes_hint || []);
+    const regions = Object.values(card.regions || {}).map(r => r.label).filter(Boolean);
+    const links = (card.urls || []).slice(0, 3).map(u => h('a', { href: u, target: '_blank', rel: 'noopener noreferrer', 'data-external': '', class: 'small' }, u.replace(/^https?:\/\//, '').replace(/\/$/, '')));
+    const pv = previews[fid] || [];
+    return h('div', { class: 'fmt-box col gap-6' },
+      h('div', { class: 'row wrap gap-6' }, ui.chip(card.name || fid, { icon: 'fileText', type: 'accent' }),
+        h('span', { class: 'small muted grow' }, FORMAT_SOURCE[card.source] || card.source || ''),
+        card.model ? h('span', { class: 'xs faint', title: 'The AI model that wrote the reading rule, and what reading it cost (not booked in Runs & cost: no dataset exists yet)' }, `${card.model}${card.cached ? ' · saved answer' : card.usd != null ? ` · $${Number(card.usd).toFixed(card.usd < 0.1 ? 3 : 2)}` : ''}`) : null),
+      links.length ? h('div', { class: 'row wrap gap-8' }, icon('external', 12), links) : null,
+      ck.deferred ? h('div', { class: 'small muted' }, 'A large file: it is read in full while registering.')
+        : h('div', { class: 'small muted' }, `Checked on ${fmt.num(ck.checked || 0)} files: ${fmt.num(ck.boxes || 0)} boxes${ck.regions ? `, ${fmt.num(ck.regions)} ${regions[0] ? regions[0].toLowerCase() + 's' : 'regions'}` : ''}${ck.bad ? `, ${fmt.num(ck.bad)} unreadable lines` : ''}${ck.oob ? `, ${fmt.num(ck.oob)} outside the image` : ''}.`),
+      (ck.classes || []).length && JSON.stringify(ck.classes) !== JSON.stringify(lay.classes || []) ? h('div', { class: 'row wrap gap-4' }, h('span', { class: 'small muted' }, `Classes (${ck.classes.length}):`), ck.classes.slice(0, 30).map((c, i) => ui.chip(`${i} ${c}`, { cls: 'outline' })), ck.classes.length > 30 ? h('span', { class: 'small faint' }, `+${ck.classes.length - 30} more`) : null) : null,
+      attrs.length || regions.length ? h('div', { class: 'small muted' }, [attrs.length ? `Attributes: ${attrs.map(a => a.label || a.name).join(', ')}` : '', regions.length ? `Regions that are not objects: ${regions.join(', ')}` : ''].filter(Boolean).join(' · ')) : null,
+      pv.length ? h('div', { class: 'fmt-previews' }, pv.map(p => h('figure', { title: p.name },
+        h('img', { src: p.data, alt: `${p.name} with converted boxes`, width: p.width, height: p.height, loading: 'lazy' }),
+        h('figcaption', { class: 'xs faint truncate' }, `${p.boxes} boxes${p.regions ? ` · ${p.regions} regions` : ''}`)))) : null,
+      h('div', { class: 'xs faint' }, 'Registering writes YOLO labels into a new labels folder; the original annotation files are never changed. Attributes and regions stay available in Annotate, Explore and Objects.'));
+  }));
 }
 
 const LAYOUT_DESC = {

@@ -356,19 +356,36 @@ def resolve(pred_ids: Sequence[int], reason: str) -> int:
 _POINT_KINDS = ("detect", "prev_frame", "interp", "refine", "missing")   # "there is an object here" suggestions
 
 
+def drop_in_regions(image_id: int, preds: Sequence[dict]) -> Tuple[List[dict], int]:
+    """Leave out "there is an object here" suggestions whose centre lies in one of the image's regions that are not
+    objects (ignored regions, DontCare, crowds of annotations converted from another format — core.annindex)."""
+    preds = list(preds)
+    objs = [p for p in preds if (p.get("kind") or "detect") in _POINT_KINDS]
+    if not objs:
+        return preds, 0
+    from ..core import annindex
+    kept, n = annindex.drop_in_regions(int(image_id), objs)
+    if not n:
+        return preds, 0
+    keep = {id(p) for p in kept}
+    return [p for p in preds if (p.get("kind") or "detect") not in _POINT_KINDS or id(p) in keep], n
+
+
 def drop_rejected(image_id: int, preds: Sequence[dict], iou: float = 0.7) -> Tuple[List[dict], int]:
     """Leave out new suggestions the user already rejected on this image: same class, IoU >= ``iou`` with a pred
     the user decided 'rejected' (``decided_at`` set — rows a job stored as rejected itself do not count). Object
     suggestions (detect / prev_frame / interp / refine / missing) match each other; label-fix findings (loose / swap /
-    spurious) match their own kind. Returns (kept, number dropped)."""
+    spurious) match their own kind. Suggestions inside regions that are not objects (drop_in_regions) are left out
+    too. Returns (kept, number dropped)."""
     preds = list(preds)
     if not preds:
         return preds, 0
+    preds, in_regions = drop_in_regions(image_id, preds)
     from . import geometry
     rej = db.query("SELECT cls, xc, yc, w, h, kind FROM ai_preds WHERE image_id=? AND state='rejected' AND "
                    "decided_at IS NOT NULL", (int(image_id),))
     if not rej:
-        return preds, 0
+        return preds, in_regions
 
     def group(kind: str) -> str:
         return "object" if (kind or "detect") in _POINT_KINDS else kind
@@ -381,7 +398,7 @@ def drop_rejected(image_id: int, preds: Sequence[dict], iou: float = 0.7) -> Tup
             dropped += 1
             continue
         kept.append(p)
-    return kept, dropped
+    return kept, dropped + in_regions
 
 
 def set_state(pred_ids: Sequence[int], state: str) -> int:

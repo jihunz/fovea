@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import logging
 import re
 import threading
@@ -19,6 +20,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .. import vlm
 from ..base import ProviderError, Usage
+
+WEB_SEARCH_USD = 0.01        # web search is billed at $10 per 1,000 searches, on top of the tokens
 from ..vlm import CallResult, Prepared, Transient
 
 log = logging.getLogger("fovea.ai")
@@ -59,7 +62,7 @@ class AnthropicProvider(vlm.VLMProvider):
     needs_key = True
     env_keys = ("ANTHROPIC_API_KEY",)
     capabilities = {"detect": True, "classify": True, "refine": False, "open_vocab": True, "exemplars": False,
-                    "batch_api": True, "generate": True}
+                    "batch_api": True, "generate": True, "web_search": True}
     default_base_url = "https://api.anthropic.com"
     base_url_env = "FOVEA_ANTHROPIC_BASE_URL"
     schema_bounds = False          # Claude's structured outputs reject minimum/maximum/maxItems
@@ -156,6 +159,10 @@ class AnthropicProvider(vlm.VLMProvider):
         return bool(m and m.get("fallback")) and "fallbacks" not in self._unsup()
 
     def _create(self, model: str, params: dict, options: Dict[str, Any], max_tokens: int) -> CallResult:
+        return self._result(self._send(model, params, options, max_tokens), model)
+
+    def _send(self, model: str, params: dict, options: Dict[str, Any], max_tokens: int) -> Any:
+        """One Messages API request → the SDK message (errors mapped to ProviderError / Transient)."""
         anthropic = _import_sdk()
         key = self.require_key()
         timeout = 600.0 if max_tokens > self.max_tokens or (self.effort_for(options) in ("high", "xhigh", "max")) else 180.0
@@ -174,20 +181,22 @@ class AnthropicProvider(vlm.VLMProvider):
             # a gateway / org without these features: drop them once and retry immediately
             if e.status_code == 400 and fallback and re.search(r"fallback|anthropic-beta", text, re.I):
                 self._unsup().add("fallbacks")
-                return self._create(model, params, {**options, "fallback": False}, max_tokens)
+                return self._send(model, params, {**options, "fallback": False}, max_tokens)
             effort_key = f"effort:{model}"
             if e.status_code == 400 and re.search(r"\beffort\b", text, re.I) and effort_key not in self._unsup() \
                     and "effort" in (params.get("output_config") or {}):
                 self._unsup().add(effort_key)          # an older model without effort control
                 params = {**params, "output_config": {k: v for k, v in params["output_config"].items() if k != "effort"}}
-                return self._create(model, params, options, max_tokens)
+                if not params["output_config"]:
+                    params.pop("output_config")
+                return self._send(model, params, options, max_tokens)
             if e.status_code == 400 and "transformations" in text and "transformations" not in self._unsup():
                 self._unsup().add("transformations")
                 for msg_ in params.get("messages", []):
                     for blk in msg_.get("content", []):
                         if isinstance(blk, dict):
                             blk.pop("transformations", None)
-                return self._create(model, params, options, max_tokens)
+                return self._send(model, params, options, max_tokens)
             details = err.get("details") if isinstance(err.get("details"), dict) else {}
             code = details.get("error_code") or err.get("error_code") or ""
             etype = err.get("type") or ""
@@ -199,7 +208,7 @@ class AnthropicProvider(vlm.VLMProvider):
             raise Transient("Anthropic request timed out", "network")
         except anthropic.APIConnectionError as e:
             raise Transient(f"Cannot reach {vlm.url_host(self.base_url())}: {vlm.scrub(e, key)}", "network")
-        return self._result(msg, model)
+        return msg
 
     def _result(self, msg: Any, model: str, batch: bool = False) -> CallResult:
         stop = getattr(msg, "stop_reason", None)
@@ -270,8 +279,47 @@ class AnthropicProvider(vlm.VLMProvider):
                   "output_config": self._output_config(model, schema, options)}
         return self._create(model, params, options, max_tokens)
 
+    def _web_generate(self, model: str, system: str, user_text: str, schema: dict, options: Dict[str, Any],
+                      max_tokens: int) -> CallResult:
+        """A JSON answer researched with the server-side web search tool. Search answers carry citations, which
+        structured outputs do not accept, so the schema goes into the prompt and the JSON is read from the text. A
+        turn paused by the server's tool loop (pause_turn) is resumed by sending it back as it is."""
+        dynamic = bool(re.search(r"claude-(opus-(5|4-[678])|sonnet-(5|4-6)|fable|mythos)", model))
+        try:
+            uses = max(1, min(int(options.get("max_searches") or 5), 10))
+        except (TypeError, ValueError):
+            uses = 5
+        tool = {"type": "web_search_20260209" if dynamic else "web_search_20250305", "name": "web_search",
+                "max_uses": uses}
+        oc = {k: v for k, v in self._output_config(model, {}, options).items() if k != "format"}
+        prompt = (user_text + "\n\nWhen you are done, answer with one JSON object that follows this JSON schema, and "
+                  "nothing after it:\n" + json.dumps(schema, ensure_ascii=False))
+        first = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        params: Dict[str, Any] = {"system": [{"type": "text", "text": system or "You answer with JSON."}],
+                                  "messages": first, "tools": [tool]}
+        if oc:
+            params["output_config"] = oc
+        total, searches, res, msg = Usage(), 0, None, None
+        for _ in range(4):
+            msg = self._send(model, params, options, max_tokens)
+            res = self._result(msg, model)
+            total.add(res.usage)
+            stu = getattr(getattr(msg, "usage", None), "server_tool_use", None)
+            searches += int(getattr(stu, "web_search_requests", 0) or 0)
+            if getattr(msg, "stop_reason", None) != "pause_turn":
+                break
+            params = {**params, "messages": first + [{"role": "assistant", "content": msg.content}]}
+        total.cost_usd += searches * WEB_SEARCH_USD
+        text = "".join(getattr(b, "text", "") or "" for b in (getattr(msg, "content", None) or [])
+                       if getattr(b, "type", None) == "text")
+        if res.finish == "refusal":
+            return CallResult("", total, res.served_by, "refusal", res.refusal)
+        return CallResult(text, total, res.served_by, res.finish)
+
     def call_generate(self, model: str, system: str, user_text: str, schema: dict, images: List[Tuple[bytes, str]],
                       options: Dict[str, Any], max_tokens: int) -> CallResult:
+        if options.get("web_search") and not images:
+            return self._web_generate(model, system, user_text, schema, options, max_tokens)
         import base64
         content: List[dict] = []
         for k, (data, mime) in enumerate(images):

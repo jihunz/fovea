@@ -2,8 +2,10 @@
 
 * ``ai.providers`` — ``{provider_id: {base_url, default_model, effort, enabled, concurrency, spend_cap_usd,
   batch_mode, coord}}`` (only keys the user changed are stored; :func:`provider_config` fills defaults).
-* ``ai.settings`` — process-wide settings: ``{device: auto|cpu|mps|cuda, keep_models: 1..4, folder_roles: ai|names}``
-  (``folder_roles``: how a dataset's image / label folders with other names than images/ and labels/ are found).
+* ``ai.settings`` — process-wide settings: ``{device: auto|cpu|mps|cuda, keep_models: 1..4, folder_roles: ai|names,
+  annotation_formats: web|ai|catalog}`` (``folder_roles``: how a dataset's image / label folders with other names than
+  images/ and labels/ are found; ``annotation_formats``: how annotations the catalog does not know are read — an AI
+  that may look up the official documentation on the web, an AI reading samples only, or not at all).
 
 Keys never live here (see ``secrets.py``); anything named like a key/secret/token is rejected outright.
 Provider modules read their settings with ``provider_config(self.id)`` at call time.
@@ -25,12 +27,14 @@ EFFORTS = ("low", "medium", "high")
 COORDS = ("auto", "qwen3", "qwen25", "gemini", "norm")
 DEVICES = ("auto", "cpu", "mps", "cuda")
 FOLDER_ROLES = ("ai", "names")
+ANNOTATION_FORMATS = ("web", "ai", "catalog")
 
 DEFAULTS: Dict[str, Any] = {
     "base_url": "", "default_model": "", "effort": "low", "enabled": True, "concurrency": 4,
     "spend_cap_usd": None, "batch_mode": False, "coord": "auto",
 }
-SETTINGS_DEFAULTS: Dict[str, Any] = {"device": "auto", "keep_models": 2, "folder_roles": "ai"}
+SETTINGS_DEFAULTS: Dict[str, Any] = {"device": "auto", "keep_models": 2, "folder_roles": "ai",
+                                     "annotation_formats": "web"}
 
 _SECRETISH = re.compile(r"(?i)(key|secret|token|password|passwd|credential)")
 _lock = threading.Lock()
@@ -157,6 +161,11 @@ def update_ai_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
             s = str(v or "ai").strip().lower()
             if s not in FOLDER_ROLES:
                 raise ConfigError(f"folder_roles must be one of {', '.join(FOLDER_ROLES)}")
+            clean[k] = s
+        elif k == "annotation_formats":
+            s = str(v or "web").strip().lower()
+            if s not in ANNOTATION_FORMATS:
+                raise ConfigError(f"annotation_formats must be one of {', '.join(ANNOTATION_FORMATS)}")
             clean[k] = s
         else:
             raise ConfigError(f"Unknown setting: {k}")
