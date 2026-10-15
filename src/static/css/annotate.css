@@ -192,3 +192,4 @@
 .ann-side .sec .row.ann-kf-row { flex-wrap: nowrap; }
 .ann-side .sec .row.ann-kf-row > .grow { min-width: 0; }
 .ann-side .sec .ann-seq-act { max-width: 100%; min-width: 0; }
+.chip.ann-attrs { max-width: 440px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -2166,8 +2166,189 @@ def test_ai_folder_answers_are_checked_against_the_listing(tmp_path):
     (root / "xml").mkdir()
     (root / "xml" / "a.xml").write_text("<annotation/>")
     inv = folder_inventory(root)
-    raw = {"sources": [{"split": "", "images": "imgs", "labels": "xml"},          # .xml only: not YOLO labels
+    raw = {"sources": [{"split": "", "images": "imgs", "labels": "xml"},          # .xml only: not YOLO labels —
                        {"split": "", "images": "../etc", "labels": ""},           # outside the dataset
                        {"split": "", "images": "nowhere", "labels": ""}]}         # not in the listing
     pairs = folders.validate(root, inv, raw)
-    assert [(Path(i).name, Path(l).name) for _s, i, l, _r in pairs] == [("imgs", "labels")]
+    # … they are the images' annotations to convert; the YOLO labels get a folder of their own
+    assert [(Path(i).name, Path(l).name, Path(a).name) for _s, i, l, _r, a in pairs] == [("imgs", "labels", "xml")]
+
+
+def _visdrone_tree(root: Path, splits=("train", "val"), n=3):
+    for sp in splits:
+        d = root / f"VisDrone2019-DET-{sp}"
+        for i in range(n):
+            _scene(d / "images" / f"{sp}_{i:03d}.jpg", (200, 150), [(0.3, 0.3, 0.2, 0.2)])
+            (d / "annotations").mkdir(parents=True, exist_ok=True)
+            (d / "annotations" / f"{sp}_{i:03d}.txt").write_text(
+                "40,25,40,30,1,4,0,1\r\n100,50,20,40,1,1,1,2\r\n150,10,30,30,0,0,0,0\r\n")
+
+
+def test_unknown_text_format_is_read_by_ai_and_checked(client, tmp_path):
+    """A semicolon format no catalog knows: the AI provider (the mock, with web search) writes a reading rule, the
+    rule is checked on the real files, and turning AI off in Settings leaves the annotations unread."""
+    from fovea.ai import formats as ai_formats
+    ai_formats.clear_cache()
+    root = tmp_path / f"odd-{uuid.uuid4().hex[:6]}"
+    for i in range(3):
+        _scene(root / "imgs" / f"f{i}.jpg", (200, 100), [(0.3, 0.5, 0.2, 0.4)])
+        (root / "gt").mkdir(parents=True, exist_ok=True)
+        (root / "gt" / f"f{i}.txt").write_text(f"car;20;30;80;70;{i % 2}\ntruck;100;10;180;90;0\n")
+    lay = layout.detect(str(root))
+    src = lay.sources[0]
+    assert src.ann_path.endswith("/gt") and src.ann_format.startswith("web-")
+    f = lay.formats[src.ann_format]
+    assert f["state"] == "pending" and f["check"]["ok"] and f["check"]["boxes"] == 6
+    assert f["card"]["urls"] and f["card"]["source"] == "web" and f["card"]["spec"]["geometry"]["type"] == "xyxy"
+    assert f["check"]["classes"] == ["car", "truck"]
+    assert client.put("/api/ai/settings", json={"annotation_formats": "catalog"}).status_code == 200
+    try:
+        ai_formats.clear_cache()
+        lay = layout.detect(str(root))
+        assert lay.formats.get("unknown", {}).get("state") == "unreadable" and not lay.sources[0].ann_format
+    finally:
+        client.put("/api/ai/settings", json={"annotation_formats": "web"})
+    assert client.put("/api/ai/settings", json={"annotation_formats": "nope"}).status_code == 422
+
+
+def test_converted_annotations_end_to_end(client, tmp_path):
+    """VisDrone through the API: detect shows the format and previews, registering converts the annotations into
+    labels/ (originals untouched), the classes, class cards, attributes and ignored regions arrive in the index, the
+    attribute filters and facets work, AI proposals inside ignored regions are dropped, and Convert again restores."""
+    from fovea.ai import store as ai_store
+    from fovea.core import imagesq
+    root = tmp_path / f"vd-{uuid.uuid4().hex[:6]}"
+    _visdrone_tree(root)
+    original = (root / "VisDrone2019-DET-val" / "annotations" / "val_000.txt").read_bytes()
+    r = client.get("/api/fs/detect", params={"path": str(root)})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["layout"]["formats"]["visdrone-det"]["state"] == "pending"
+    assert body["previews"]["visdrone-det"] and body["previews"]["visdrone-det"][0]["regions"] == 1
+    r = client.post("/api/datasets", json={"path": str(root)})
+    assert r.status_code == 200, r.text
+    ds_id = r.json()["dataset"]["id"]
+    try:
+        _wait(r.json()["job"]["id"])
+        row = db.query_one("SELECT * FROM datasets WHERE id=?", (ds_id,))
+        assert db.loads(row["classes"])[:2] == ["pedestrian", "people"] and row["classes_source"] == "format"
+        assert row["box_count"] == 12 and row["label_count"] == 6
+        assert (root / "VisDrone2019-DET-val" / "annotations" / "val_000.txt").read_bytes() == original
+        lay = db.loads(row["layout"])
+        assert lay["formats"]["visdrone-det"]["state"] == "converted"
+        assert {s["split"] for s in lay["sources"]} == {"train", "val"}
+        assert db.query_one("SELECT COUNT(*) n FROM box_attrs WHERE dataset_id=?", (ds_id,))["n"] == 12
+        assert db.query_one("SELECT COUNT(*) n FROM image_regions WHERE dataset_id=?", (ds_id,))["n"] == 6
+        card = db.query_one("SELECT description FROM class_cards WHERE dataset_id=? AND cls=0", (ds_id,))
+        assert card and "standing or walking" in card["description"]
+        img = db.query_one("SELECT id FROM images WHERE dataset_id=? ORDER BY rel_path LIMIT 1", (ds_id,))["id"]
+        lab = client.get(f"/api/datasets/{ds_id}/images/{img}/labels").json()
+        assert lab["attrs"] == [{"truncation": "0", "occlusion": "1"}, {"truncation": "1", "occlusion": "2"}]
+        assert lab["regions"][0]["kind"] == "ignored"
+        ann = client.get(f"/api/datasets/{ds_id}/annotations").json()
+        assert [a["name"] for a in ann["attributes"]] == ["truncation", "occlusion"]
+        assert ann["counts"]["occlusion"] == {"1": 6, "2": 6} and ann["region_counts"]["ignored"]["images"] == 6
+        # filters: images with a heavily occluded box; Objects narrows the boxes themselves
+        assert imagesq.count_images(ds_id, {"attr": "occlusion:2"}) == 6
+        assert imagesq.count_images(ds_id, {"attr": "occlusion:0"}) == 0
+        fac = client.get(f"/api/datasets/{ds_id}/images/facets").json()["facets"]
+        assert fac["attr"]["occlusion:2"] == 6 and fac["attr"]["region:ignored"] == 6
+        boxes = client.get(f"/api/datasets/{ds_id}/boxes", params={"attr": "occlusion:2"}).json()
+        assert boxes["total"] == 6 and all(b["cls"] == 0 for b in boxes["items"])
+        assert client.get(f"/api/datasets/{ds_id}/images", params={"attr": "nonsense"}).status_code == 400
+        # an AI proposal centred in the ignored region (150,10 30×30 px of 200×150) is never stored
+        kept, n = ai_store.drop_rejected(img, [{"cls": 3, "xc": 0.825, "yc": 0.17, "w": 0.1, "h": 0.1, "kind": "detect"},
+                                                {"cls": 3, "xc": 0.3, "yc": 0.3, "w": 0.1, "h": 0.1, "kind": "detect"}])
+        assert n == 1 and len(kept) == 1 and kept[0]["xc"] == 0.3
+        # a saved edit: the moved box loses its attributes, the others keep them
+        r = client.put(f"/api/datasets/{ds_id}/images/{img}/labels",
+                       json={"boxes": [[3, 0.35, 0.266667, 0.2, 0.2], lab["boxes"][1]], "base_version": lab["version"]})
+        assert r.status_code == 200, r.text
+        lab2 = client.get(f"/api/datasets/{ds_id}/images/{img}/labels").json()
+        assert lab2["attrs"] == [None, {"truncation": "1", "occlusion": "2"}]
+        assert db.query_one("SELECT COUNT(*) n FROM box_attrs WHERE image_id=?", (img,))["n"] == 1
+        # Convert again: a label version first, then the original annotations win
+        r = client.post(f"/api/datasets/{ds_id}/annotations/reconvert")
+        assert r.status_code == 200, r.text
+        assert r.json()["snapshot_id"]
+        _wait(r.json()["job"]["id"])
+        lab3 = client.get(f"/api/datasets/{ds_id}/images/{img}/labels").json()
+        assert lab3["attrs"] == lab["attrs"] and lab3["boxes"] == lab["boxes"]
+    finally:
+        client.delete(f"/api/datasets/{ds_id}")
+
+
+def test_web_search_requests_are_built_per_provider(monkeypatch):
+    """The web-search variant of generate_json (ai/formats.py looks up official annotation docs with it): the tool
+    each provider expects, no structured-output format (search answers carry citations), the schema in the prompt,
+    Anthropic's paused turns resumed and its searches billed."""
+    from types import SimpleNamespace as NS
+    from fovea.ai.providers.anthropic import WEB_SEARCH_USD, AnthropicProvider
+    from fovea.ai.providers.gemini import GeminiProvider
+    from fovea.ai.providers.openai import OpenAIProvider
+    from fovea.ai.vlm import CallResult
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+
+    ap = AnthropicProvider()
+    sent = []
+    replies = [NS(stop_reason="pause_turn", model="claude-opus-5-5", content=[NS(type="server_tool_use")],
+                  usage=NS(input_tokens=100, output_tokens=10, server_tool_use=NS(web_search_requests=2))),
+               NS(stop_reason="end_turn", model="claude-opus-5-5",
+                  content=[NS(type="text", text="Found it. "), NS(type="text", text='{"a": 1}')],
+                  usage=NS(input_tokens=200, output_tokens=20, server_tool_use=NS(web_search_requests=1)))]
+    monkeypatch.setattr(ap, "_send", lambda model, params, options, mt: (sent.append(params), replies[len(sent) - 1])[1])
+    res = ap.call_generate("claude-opus-5-5", "sys", "find the format", schema, [], {"web_search": True}, 4000)
+    assert res.text == 'Found it. {"a": 1}' and res.usage.cost_usd >= 3 * WEB_SEARCH_USD
+    assert sent[0]["tools"][0]["type"] == "web_search_20260209" and "format" not in sent[0].get("output_config", {})
+    assert '"required": ["a"]' in sent[0]["messages"][0]["content"][0]["text"]
+    assert sent[1]["messages"][1] == {"role": "assistant", "content": replies[0].content}     # resumed as it was
+    sent.clear()
+    replies[0] = replies[1]
+    ap.call_generate("claude-haiku-5-5", "sys", "q", schema, [], {"web_search": True}, 4000)
+    assert sent[0]["tools"][0]["type"] == "web_search_20250305"                                # basic variant
+
+    gp, bodies = GeminiProvider(), []
+    monkeypatch.setattr(gp, "_post", lambda model, body, options, mt: (bodies.append(body), CallResult('{"a": 2}'))[1])
+    gp.call_generate("gemini-3-pro", "sys", "q", schema, [], {"web_search": True}, 4000)
+    gc = bodies[0]["generationConfig"]
+    assert bodies[0]["tools"] == [{"google_search": {}}] and "responseJsonSchema" not in gc
+    assert '"required": ["a"]' in bodies[0]["contents"][0]["parts"][-1]["text"]
+
+    op, obodies = OpenAIProvider(), []
+    monkeypatch.setattr(op, "_post", lambda model, body, options, mt: (obodies.append(body), CallResult('{"a": 3}'))[1])
+    op.call_generate("gpt-5", "sys", "q", schema, [], {"web_search": True}, 4000)
+    assert obodies[0]["tools"] == [{"type": "web_search"}] and "text" not in obodies[0]
+    op.call_generate("gpt-5", "sys", "q", schema, [], {}, 4000)
+    assert "tools" not in obodies[1] and obodies[1]["text"]["format"]["type"] == "json_schema"   # unchanged otherwise
+
+
+def test_a_failed_ai_rule_gets_one_repair_round_and_only_a_passing_rule_is_kept(client, tmp_path, monkeypatch):
+    """The AI's first rule fails the check on the real files: the model is shown why and writes one more; that one
+    passes, is used, and is the only one remembered (a failed rule is never served from the cache)."""
+    from fovea.ai import formats as ai_formats
+    ai_formats.clear_cache()
+    root = tmp_path / f"fix-{uuid.uuid4().hex[:6]}"
+    for i in range(3):
+        _scene(root / "imgs" / f"f{i}.jpg", (200, 100), [(0.3, 0.5, 0.2, 0.4)])
+        (root / "gt").mkdir(parents=True, exist_ok=True)
+        (root / "gt" / f"f{i}.txt").write_text("7 20 30 80 70\n3 100 10 180 90\n")
+    answers = []
+
+    def fake_ask(p, model, user, options, spent, source):
+        good = len(answers) > 0
+        answers.append(user)
+        return ai_formats.card_from_answer({
+            "dataset": "Fixture", "format_name": "fixture", "delimiter": "space", "header_prefixes": [],
+            "geometry": "xyxy", "geometry_columns": [1, 2, 3, 4] if good else [0, 1, 2, 3], "units": "pixel",
+            "class_column": 0 if good else 4, "classes": [{"value": "7", "name": "seven", "definition": ""},
+                                                       {"value": "3", "name": "three", "definition": ""}],
+            "regions": [], "attributes": [], "urls": ["https://example.org/fixture"], "license": "", "citation": "",
+            "notes": "", "confidence": 0.9}, source, p.id, model)
+    monkeypatch.setattr(ai_formats, "_ask", fake_ask)
+    lay = layout.detect(str(root))
+    src = lay.sources[0]
+    f = lay.formats[src.ann_format]
+    assert f["check"]["ok"] and f["card"]["spec"]["geometry"]["columns"] == [1, 2, 3, 4]
+    assert len(answers) == 2 and "failed:" in answers[1]                          # the repair saw what went wrong
+    cache = db.kv_get(ai_formats.CACHE_KEY, {})
+    assert [c["cards"][0]["spec"]["geometry"]["columns"] for c in cache.values()] == [[1, 2, 3, 4]]

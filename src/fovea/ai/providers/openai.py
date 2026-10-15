@@ -28,7 +28,7 @@ class OpenAIProvider(vlm.VLMProvider):
     needs_key = True
     env_keys = ("OPENAI_API_KEY",)
     capabilities = {"detect": True, "classify": True, "refine": False, "open_vocab": True, "exemplars": False,
-                    "batch_api": True, "generate": True, "flex": True}
+                    "batch_api": True, "generate": True, "flex": True, "web_search": True}
     default_base_url = "https://api.openai.com/v1"
     batch_max_bytes = 180 * 1024 * 1024    # a batch input file may hold 200 MB / 50,000 requests
     batch_max_requests = 50000
@@ -185,11 +185,19 @@ class OpenAIProvider(vlm.VLMProvider):
                 content.append({"type": "input_text", "text": f"Image {k + 1}:"})
             content.append({"type": "input_image", "detail": str(options.get("detail") or "high"),
                             "image_url": f"data:{mime};base64," + base64.b64encode(data).decode("ascii")})
+        web = bool(options.get("web_search")) and not images
+        if web:
+            # the web search tool: the schema goes into the prompt and the JSON is read from the answer text
+            user_text += ("\n\nWhen you are done, answer with one JSON object that follows this JSON schema, and "
+                          "nothing after it:\n" + json.dumps(schema, ensure_ascii=False))
         content.append({"type": "input_text", "text": user_text})
         opts = dict(options)
         opts.setdefault("batch_mode", False)       # interactive: never queue on the Flex tier unless asked to
         body = self._body(model, system or "Answer with JSON only.", content,
                           vlm.schema_for("openai", schema, strict=True), "result", opts, max_tokens)
+        if web:
+            body.pop("text", None)
+            body["tools"] = [{"type": "web_search"}]
         return self._post(model, body, opts, max_tokens)
 
     # ---- Batch API (/v1/files + /v1/batches over /v1/responses)

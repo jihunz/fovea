@@ -9,6 +9,7 @@ batches under one Fovea id); results are read from ``inlinedResponses`` or a ``r
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -31,7 +32,7 @@ class GeminiProvider(vlm.VLMProvider):
     needs_key = True
     env_keys = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
     capabilities = {"detect": True, "classify": True, "refine": False, "open_vocab": True, "exemplars": False,
-                    "batch_api": True, "generate": True}
+                    "batch_api": True, "generate": True, "web_search": True}
     default_base_url = "https://generativelanguage.googleapis.com"
     batch_max_bytes = 18 * 1024 * 1024     # inline batch requests are capped at 20 MB: larger jobs become several
     batch_max_requests = 5000
@@ -212,10 +213,20 @@ class GeminiProvider(vlm.VLMProvider):
             if level in MEDIA_EDGE and self.generation(model) >= 3:
                 part["mediaResolution"] = {"level": f"MEDIA_RESOLUTION_{level.upper()}"}
             parts.append(part)
+        web = bool(options.get("web_search")) and not images
+        if web:
+            # Grounding with Google Search: JSON mode and tools do not mix on every model, so the schema goes into
+            # the prompt and the JSON is read from the text (search charges are not counted in the cost)
+            user_text += ("\n\nWhen you are done, answer with one JSON object that follows this JSON schema, and "
+                          "nothing after it:\n" + json.dumps(schema, ensure_ascii=False))
         parts.append({"text": user_text})
-        body: Dict[str, Any] = {"contents": [{"role": "user", "parts": parts}],
-                                "generationConfig": self._gen_config(model, vlm.schema_for("gemini", schema), options,
-                                                                     max_tokens)}
+        gc = self._gen_config(model, vlm.schema_for("gemini", schema), options, max_tokens)
+        if web:
+            gc.pop("responseMimeType", None)
+            gc.pop("responseJsonSchema", None)
+        body: Dict[str, Any] = {"contents": [{"role": "user", "parts": parts}], "generationConfig": gc}
+        if web:
+            body["tools"] = [{"google_search": {}}]
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
         return self._post(model, body, options, max_tokens)

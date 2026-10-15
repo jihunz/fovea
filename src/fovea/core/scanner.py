@@ -393,6 +393,11 @@ def scan_dataset(dataset_id: str, job: Job) -> dict:
     db.execute("UPDATE datasets SET status='scanning', updated_at=? WHERE id=? AND status!='deleting'", (db.now(), dataset_id))
     conn = db.connect()
     try:
+        from . import annindex                  # noqa: PLC0415 — annindex imports layout, as this module does
+        annindex.register_hook()
+        if annindex.convert_pending(dataset_id, job):
+            # annotations in another format were converted into YOLO labels: index those (layout and classes changed)
+            ds = db.query_one("SELECT * FROM datasets WHERE id=?", (dataset_id,)) or ds
         result = _scan(ds, job, conn)
     except JobCancelled:
         # A user-requested cancel is not an error, and must not leave the dataset parked at 'scanning'.
@@ -942,6 +947,11 @@ def refresh_image(image_id: int, n_classes: Optional[int] = None, update_counts:
             if "locked" not in str(e) or attempt == 2:
                 raise
             time.sleep(0.5 * (attempt + 1))
+    try:
+        from . import annindex                  # noqa: PLC0415
+        annindex.sync_image(row["dataset_id"], image_id)    # attributes follow the boxes that kept their geometry
+    except Exception:  # noqa: BLE001 — attributes are a view on the label; the save itself succeeded
+        traceback.print_exc()
     if update_counts:
         refresh_dataset_counts(row["dataset_id"])
     return db.query_one("SELECT * FROM images WHERE id=?", (image_id,))

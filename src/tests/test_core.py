@@ -1051,3 +1051,169 @@ def test_pasted_class_names_are_read_in_every_common_form(tmp_path):
             assert got["error"] and got["names"] == [], text
         else:
             assert got["names"] == want and not got.get("error"), (text, got)
+
+
+# ------------------------------------------------------------------ annotation formats other than YOLO
+
+def _visdrone(root: Path, split: str, n: int = 3, size=(200, 150)):
+    """A VisDrone-DET split: images/ + annotations/ with pixel CSV rows (category 0 = ignored region)."""
+    d = root / f"VisDrone2019-DET-{split}"
+    for i in range(n):
+        _img(d / "images" / f"{split}_{i:04d}.jpg", size)
+        rows = ["10,20,40,30,1,4,0,1", "100,50,20,40,1,1,1,2", "150,10,30,30,0,0,0,0", f"60,90,{20 + i},20,1,10,0,0"]
+        (d / "annotations").mkdir(parents=True, exist_ok=True)
+        (d / "annotations" / f"{split}_{i:04d}.txt").write_text("\r\n".join(rows) + "\r\n")
+    return d
+
+
+def test_split_names_read_split_words_inside_shared_names():
+    assert layout.split_names(["VisDrone2019-DET-train", "VisDrone2019-DET-val", "VisDrone2019-DET-test-dev"]) == {
+        "VisDrone2019-DET-train": "train", "VisDrone2019-DET-val": "val", "VisDrone2019-DET-test-dev": "test-dev"}
+    assert layout.split_names(["siteA-train", "siteB-train"]) == {"siteA-train": "sitea-train", "siteB-train": "siteb-train"}
+    assert layout.split_names(["train", "valid", "fold2"]) == {"train": "train", "valid": "val", "fold2": "fold2"}
+
+
+def test_yolo_is_told_apart_from_other_text_formats():
+    from fovea.core import annformats as af
+    assert af.txt_kind(["0 0.5 0.5 0.2 0.2", "3 0.1 0.2 0.05 0.05 0.91"]) == "yolo"
+    assert af.txt_kind(["0 0.1 0.1 0.2 0.1 0.3 0.4 0.1 0.4"]) == "yolo"                 # a polygon row
+    assert af.txt_kind(["684,8,273,116,0,0,0,0"]) == "other"                             # VisDrone
+    assert af.txt_kind(["Car 0.00 0 -1.57 599.41 156.40 629.75 189.25 2.85 2.63 12.34 0.47 1.49 69.44 -1.56"]) == "other"
+    assert af.txt_kind(["10 20 110 20 110 80 10 80 plane 0"]) == "other"                # DOTA pixels
+    assert af.txt_kind([]) == "empty"
+
+
+def test_visdrone_annotations_are_recognised_checked_previewed_and_converted(tmp_path):
+    from fovea.core import annformats as af
+    from fovea.core.labels import read_label_file
+    d = _visdrone(tmp_path, "train")
+    card, _s, how = af.recognize(d / "annotations", hint=str(d))
+    assert how == "catalog" and card["id"] == "visdrone-det"
+    st = af.check(card, d / "images", d / "annotations")
+    assert st["ok"] and st["boxes"] == 9 and st["regions"] == 3 and not st["problems"]
+    assert st["attr_values"]["occlusion"] == {"1": 3, "2": 3, "0": 3}
+    pv = af.preview(card, d / "images", d / "annotations")
+    assert pv and pv[0]["data"].startswith("data:image/jpeg;base64,") and pv[0]["regions"] == 1
+    out = af.convert(card, d / "images", d / "annotations", d / "labels")
+    assert out["labels"] == 3 and out["boxes"] == 9 and out["regions"] == 3 and out["classes"][0] == "pedestrian"
+    boxes, _c, _i = read_label_file(d / "labels" / "train_0000.txt", 10)
+    # car (category 4 → class 3): left 10, top 20, 40×30 px in a 200×150 image
+    assert boxes[0][0] == 3 and boxes[0][1:] == pytest.approx([0.15, 0.233333, 0.2, 0.2], abs=1e-6)
+    assert boxes[1][0] == 0 and len(boxes) == 3                                        # the ignored region is no box
+    side = af.load_sidecar(d / "labels")["train_0000"]
+    assert af.match_attrs(side, boxes) == [{"truncation": "0", "occlusion": "1"}, {"truncation": "1", "occlusion": "2"},
+                                           {"truncation": "0", "occlusion": "0"}]
+    moved = [list(b) for b in boxes]
+    moved[0][1] += 0.01                                                             # a moved box is a new annotation
+    moved[1][0] = 5                                                                  # a re-classed one keeps its flags
+    assert af.match_attrs(side, moved)[:2] == [None, {"truncation": "1", "occlusion": "2"}]
+    assert side["regions"][0][0] == "ignored"
+    assert af.is_converted(d / "labels") and af.read_marker(d / "labels")["counts"]["boxes"] == 9
+    (tmp_path / "theirs").mkdir(exist_ok=True)                                     # someone else's labels are kept
+    (tmp_path / "theirs" / "x.txt").write_text("0 0.5 0.5 0.1 0.1\n")
+    with pytest.raises(ValueError):
+        af.convert(card, d / "images", d / "annotations", tmp_path / "theirs")
+
+
+def test_layout_attaches_visdrone_annotations_with_split_names(tmp_path):
+    root = tmp_path / "raw"
+    for sp in ("train", "val", "test-dev"):
+        _visdrone(root, sp, n=2)
+    lay = layout.detect(str(root), ai=False)
+    srcs = {s.split: s for s in lay.sources}
+    assert set(srcs) == {"train", "val", "test-dev"}
+    s = srcs["val"]
+    assert s.ann_format == "visdrone-det" and s.ann_path.endswith("VisDrone2019-DET-val/annotations")
+    assert s.label_dir.endswith("VisDrone2019-DET-val/labels") and not s.label_dir_exists
+    assert lay.formats["visdrone-det"]["state"] == "pending" and lay.formats["visdrone-det"]["check"]["ok"]
+    assert lay.classes[:2] == ["pedestrian", "people"] and lay.classes_from == "format"
+    # the same CSV in a folder called labels/: converted beside it, never over it
+    other = tmp_path / "flat"
+    _img(other / "images" / "a.jpg", (200, 150))
+    (other / "labels").mkdir(parents=True)
+    (other / "labels" / "a.txt").write_text("10,20,40,30,1,4,0,1\n")
+    lay = layout.detect(str(other), ai=False)
+    assert lay.sources[0].ann_format == "visdrone-det" and lay.sources[0].label_dir.endswith("labels_yolo")
+
+
+def test_other_built_in_formats_are_read(tmp_path):
+    import json as _json
+    from fovea.core import annformats as af
+    # Pascal VOC
+    voc = tmp_path / "voc"
+    _img(voc / "JPEGImages" / "a.jpg", (100, 80))
+    (voc / "Annotations").mkdir(parents=True)
+    (voc / "Annotations" / "a.xml").write_text(
+        "<annotation><size><width>100</width><height>80</height></size><object><name>dog</name><difficult>1</difficult>"
+        "<bndbox><xmin>10</xmin><ymin>10</ymin><xmax>60</xmax><ymax>50</ymax></bndbox></object></annotation>")
+    lay = layout.detect(str(voc), ai=False)
+    assert lay.sources[0].ann_format == "voc" and lay.formats["voc"]["check"]["classes"] == ["dog"]
+    # LabelMe .json beside the images
+    lm = tmp_path / "lm"
+    _img(lm / "a.jpg", (100, 80))
+    (lm / "a.json").write_text(_json.dumps({"imagePath": "a.jpg", "imageWidth": 100, "imageHeight": 80, "shapes": [
+        {"label": "cat", "shape_type": "rectangle", "points": [[10, 10], [50, 40]], "flags": {"blurry": True}},
+        {"label": "cat", "shape_type": "polygon", "points": [[60, 10], [90, 10], [80, 50]]}]}))
+    lay = layout.detect(str(lm), ai=False)
+    src = lay.sources[0]
+    assert src.ann_format == "labelme" and Path(src.label_dir) == lm / "labels"
+    out = af.convert(lay.formats["labelme"]["card"], Path(src.img_dir), Path(src.ann_path), Path(src.label_dir),
+                     src.recursive)
+    rows = (lm / "labels" / "a.txt").read_text().splitlines()
+    assert out["boxes"] == 2 and len(rows[0].split()) == 5 and len(rows[1].split()) == 7     # box, then a polygon
+    # COCO: one file for the images (category ids from 1, crowds as regions)
+    co = tmp_path / "coco"
+    for n in ("x.jpg", "y.jpg"):
+        _img(co / "train2017" / n, (100, 100))
+    (co / "annotations").mkdir(parents=True)
+    (co / "annotations" / "instances_train2017.json").write_text(_json.dumps({
+        "images": [{"id": 1, "file_name": "x.jpg", "width": 100, "height": 100},
+                   {"id": 2, "file_name": "y.jpg", "width": 100, "height": 100}],
+        "annotations": [{"id": 1, "image_id": 1, "category_id": 3, "bbox": [10, 10, 20, 20], "iscrowd": 0},
+                        {"id": 2, "image_id": 1, "category_id": 1, "bbox": [50, 50, 40, 40], "iscrowd": 1}],
+        "categories": [{"id": 1, "name": "person"}, {"id": 3, "name": "car"}]}))
+    lay = layout.detect(str(co / "train2017"), ai=False)
+    src = lay.sources[0]
+    assert src.ann_format == "coco" and src.ann_path.endswith("instances_train2017.json")
+    st = lay.formats["coco"]["check"]
+    assert st["ok"] and st["classes"] == ["person", "car"] and st["boxes"] == 1 and st["regions"] == 1
+    # KITTI and DOTA lines
+    k = af.Sniff(path=tmp_path, single=False, ext=".txt",
+                 lines=["Car 0.00 0 -1.57 599.41 156.40 629.75 189.25 2.85 2.63 12.34 0.47 1.49 69.44 -1.56",
+                        "DontCare -1 -1 -10 503.89 169.71 590.61 190.13 -1 -1 -1 -1000 -1000 -1000 -10"])
+    assert af._fp_kitti(k) > 0.9
+    d = af.Sniff(path=tmp_path, single=False, ext=".txt", lines=["imagesource:GoogleEarth", "gsd:0.146",
+                                                               "10 20 110 20 110 80 10 80 plane 0"])
+    assert af._fp_dota(d) > 0.9
+    card = af.catalog_card("dota")
+    p = af.parse_delimited("\n".join(d.lines), card, 200.0, 100.0, {"plane": 0})
+    assert len(p.rows) == 1 and len(p.rows[0]) == 9 and p.attrs == [{"difficult": "0"}]
+
+
+def test_coco_folders_each_get_their_own_annotation_file(tmp_path):
+    import json as _json
+    co = tmp_path / "coco"
+    for split in ("train2017", "val2017"):
+        for n in ("a.jpg", "b.jpg"):
+            _img(co / split / f"{split}_{n}", (100, 100))
+        (co / "annotations").mkdir(parents=True, exist_ok=True)
+        (co / "annotations" / f"instances_{split}.json").write_text(_json.dumps({
+            "images": [{"id": i, "file_name": f"{split}_{n}", "width": 100, "height": 100}
+                       for i, n in enumerate(("a.jpg", "b.jpg"), 1)],
+            "annotations": [{"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 10, 20, 20], "iscrowd": 0}],
+            "categories": [{"id": 1, "name": "person"}]}))
+    lay = layout.detect(str(co), ai=False)
+    got = {s.split: (Path(s.img_dir).name, Path(s.ann_path).name, s.ann_format) for s in lay.sources}
+    assert got == {"train": ("train2017", "instances_train2017.json", "coco"),
+                   "val": ("val2017", "instances_val2017.json", "coco")}
+    assert {Path(s.label_dir).relative_to(co).as_posix() for s in lay.sources} == {"labels/train2017", "labels/val2017"}
+
+
+def test_tokens_lose_brackets_and_generic_folders_name_their_parent(tmp_path):
+    from fovea.ai.formats import dataset_label
+    from fovea.core import annformats as af
+    assert af._split("(563,478),(630,573),1\r", ",") == ["563", "478", "630", "573", "1"]       # NWPU VHR-10
+    assert af._split('"car" 10 20 30 40', "space") == ["car", "10", "20", "30", "40"]
+    assert dataset_label(tmp_path / "CARPK_devkit" / "data") == "CARPK_devkit/data"
+    assert dataset_label(tmp_path / "visdrone" / "raw") == "visdrone/raw"
+    assert dataset_label(tmp_path / "line_inspection_2025") == "line_inspection_2025"

@@ -28,8 +28,10 @@ _lock = threading.Lock()
 SYSTEM = ("You map the folders of an object-detection dataset. Images are pictures (.jpg, .png …); labels are YOLO "
           ".txt files, one per image with the same file name. You are given the dataset's folder listing and answer "
           "which folders hold the images and which folder holds each one's labels. Use only paths from the listing, "
-          "exactly as written. Ignore folders of other annotation formats (.xml, .json) as label folders — Fovea "
-          "reads YOLO .txt only.")
+          "exactly as written. Only folders of YOLO .txt files are label folders (the listing marks each folder's "
+          "first .txt line as YOLO or not). A folder of .txt in another format (VisDrone, KITTI, DOTA …), of .xml "
+          "(Pascal VOC) or of .json (LabelMe) that belongs to an images folder is its `annotations` — Fovea converts "
+          "those — never its `labels`.")
 
 SCHEMA = {
     "type": "object",
@@ -45,8 +47,11 @@ SCHEMA = {
                     "labels": {"type": "string", "description": "the folder with this images folder's YOLO .txt labels "
                                                                 "(a listed path); the images folder itself when labels "
                                                                 "sit beside the images; empty when there are none yet"},
+                    "annotations": {"type": "string", "description": "the folder with this images folder's annotations "
+                                                                     "in another format (a listed path); empty when "
+                                                                     "there are none"},
                 },
-                "required": ["split", "images", "labels"],
+                "required": ["split", "images", "labels", "annotations"],
             },
         },
         "reason": {"type": "string", "description": "one short sentence"},
@@ -97,8 +102,9 @@ def _clean_rel(s) -> Optional[str]:
 
 
 def validate(root: Path, inv, raw) -> List[tuple]:
-    """[(split, img_dir, label_dir, recursive)] from a model answer; anything not in the listing is dropped."""
-    from ..core.layout import default_label_dir, norm_split
+    """[(split, img_dir, label_dir, recursive, annotations)] from a model answer; anything not in the listing is
+    dropped, and a "label" folder whose .txt are not YOLO becomes the annotations to convert."""
+    from ..core.layout import default_label_dir, norm_split, split_names
     by_rel = {d.rel: d for d in inv}
     out, seen = [], set()
     for item in (raw or {}).get("sources") or []:
@@ -110,18 +116,25 @@ def validate(root: Path, inv, raw) -> List[tuple]:
             continue
         lab_rel = _clean_rel(item.get("labels"))
         lab = by_rel.get(lab_rel) if lab_rel else None
-        if lab is not None and lab.rel != img and lab.tree_txt <= 0:
-            lab = None                                          # an .xml / .json folder: not YOLO labels
+        ann_rel = _clean_rel(item.get("annotations"))
+        ann = by_rel.get(ann_rel) if ann_rel else None
+        if lab is not None and lab.rel == img and d.txt_kind == "other":
+            ann, lab = ann or d, None                           # .txt of another format beside the images
+        elif lab is not None and lab.rel != img and not lab.yolo_labels:
+            ann, lab = ann or (lab if lab.tree_ann else None), None   # VisDrone .txt, .xml, .json: converted
+        if ann is not None and not ann.tree_ann:
+            ann = None
         label_dir = lab.path if lab is not None else default_label_dir(d.path, root)
         split = norm_split(str(item.get("split") or "").strip())[:40]
-        out.append((split, d.path, label_dir, True))
+        out.append((split, d.path, label_dir, True, ann.path if ann is not None else None))
         seen.add(img)
     # A parent and its own sub-folder both listed would index the same images twice: keep the deeper ones.
-    rels = [str(p) for _s, p, _l, _r in out]
+    rels = [str(t[1]) for t in out]
     out = [t for t in out if not any(o != str(t[1]) and o.startswith(str(t[1]) + "/") for o in rels)]
     if len(out) > 1 and any(not t[0] for t in out):
         out = [(t[0] or _split_of(t[1], root), *t[1:]) for t in out]     # several sets left unnamed: name them
-    return out
+    names = split_names(sorted({t[0] for t in out}))              # 'visdrone2019-det-val' → val
+    return [(names.get(t[0], t[0]),) + tuple(t[1:]) for t in out]
 
 
 def _split_of(img: Path, root: Path) -> str:
@@ -132,7 +145,7 @@ def _split_of(img: Path, root: Path) -> str:
     if split:
         return split
     if img.parent != root:
-        return norm_split(img.parent.name)
+        return img.parent.name
     return "" if role else norm_split(img.name)
 
 

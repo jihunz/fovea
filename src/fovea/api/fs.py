@@ -56,4 +56,24 @@ def api_detect(request: Request, path: str = Query(...), ai: int = Query(1)):
     p = resolve(path)
     name = suggested_name(p)
     return {"layout": lay.to_dict(), "suggested_name": name or "dataset", "suggested_id": slugify(name),
-            "path_host": to_host(p)}
+            "path_host": to_host(p), "previews": _format_previews(lay)}
+
+
+def _format_previews(lay) -> dict:
+    """For each format waiting for conversion: a few sample images with the converted boxes drawn on them, so the
+    reading rule can be checked by eye before anything is written."""
+    from pathlib import Path
+
+    from ..core import annformats as af
+    out = {}
+    for fid, f in (lay.formats or {}).items():
+        if f.get("state") != "pending" or not f.get("card"):
+            continue
+        src = next((s for s in lay.sources if s.ann_format == fid and s.ann_path and s.img_dir), None)
+        if src is None:
+            continue
+        try:
+            out[fid] = af.preview(f["card"], Path(src.img_dir), Path(src.ann_path), src.recursive)
+        except Exception:  # noqa: BLE001 — a preview is a convenience; detection itself succeeded
+            out[fid] = []
+    return out

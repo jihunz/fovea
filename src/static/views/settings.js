@@ -164,6 +164,9 @@ export async function render(ctx, fovea) {
     const rolesState = h('span', { class: 'small muted' });
     const rolesSel = h('select', { class: 'select auto', 'aria-label': 'How dataset folders are found', onChange: (e) => saveSettings({ folder_roles: e.target.value }, rolesState) },
       [['ai', 'AI first, then folder names'], ['names', 'Folder names only']].map(([v, t]) => h('option', { value: v, selected: v === (s.folder_roles || 'ai') }, t)));
+    const fmtState = h('span', { class: 'small muted' });
+    const fmtSel = h('select', { class: 'select auto', 'aria-label': 'How annotation formats are read', onChange: (e) => saveSettings({ annotation_formats: e.target.value }, fmtState) },
+      [['web', 'Built-in formats, then AI with the official documentation'], ['ai', 'Built-in formats, then AI from sample lines'], ['catalog', 'Built-in formats only']].map(([v, t]) => h('option', { value: v, selected: v === (s.annotation_formats || 'web') }, t)));
     const groups = GROUPS.map(([g, label]) => {
       const list = P.providers.filter(p => groupOf(p) === g);
       if (!list.length) return null;
@@ -174,6 +177,7 @@ export async function render(ctx, fovea) {
     put(aiBody,
       remoteSlot,
       row('Local inference', h('div', { class: 'row wrap' }, devSel, keepSel, devState), h('span', { class: 'hint' }, 'Where YOLO, YOLOE and SAM run. Automatic picks the fastest device available; more models in memory switch faster but use more RAM.')),
+      row('Read annotation formats', h('div', { class: 'row wrap' }, fmtSel, fmtState), h('span', { class: 'hint' }, 'Annotations that are not YOLO are converted when a dataset is added. VisDrone, KITTI, DOTA, Pascal VOC, COCO, LabelMe and CVAT are built in. For another format, an AI provider writes a reading rule from a few sample lines — with the official documentation it finds on the web (only the guessed dataset name and folder names go to the search; Hugging Face is searched for the dataset card). The rule is used only after it reads the real files correctly, and you see sample images with the converted boxes before registering.')),
       row('Find dataset folders', h('div', { class: 'row wrap' }, rolesSel, rolesState), h('span', { class: 'hint' }, 'When a dataset’s folders are not called images/ and labels/ (imgs/ + annotations/, train_images/ …), the first AI provider that can write text reads the folder names and file counts — never images or labels — and says which hold the images and labels. Without one, or with “Folder names only”, common names are matched.')),
       h('div', { class: 'mt-12' }, ...groups),
       totals,

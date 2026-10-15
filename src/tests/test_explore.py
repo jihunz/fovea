@@ -304,7 +304,10 @@ def node_out(tmp_path_factory):
     # Explore's own imports are browser modules: stub them (only their names are needed to load the file).
     (d / "views" / "issues.mjs").write_text("export const ISSUE_LABELS = {};\n")
     (d / "lib" / "media.mjs").write_text("export const thumbPx = () => 256, trackImage = () => {}, createImageLoader = () => ({}), createFrameCache = () => ({});\n")
+    (d / "lib" / "annattrs.mjs").write_text((EXPLORE.parent.parent / "lib" / "annattrs.js").read_text(encoding="utf-8"),
+                                            encoding="utf-8")     # pure: used as is
     src = EXPLORE.read_text(encoding="utf-8").replace("'./issues.js'", "'./issues.mjs'").replace("'../lib/media.js'", "'../lib/media.mjs'")
+    src = src.replace("'../lib/annattrs.js'", "'../lib/annattrs.mjs'")
     (d / "views" / "explore.mjs").write_text(src, encoding="utf-8")
     (d / "run.mjs").write_text(SCENARIOS, encoding="utf-8")
     r = subprocess.run([NODE, str(d / "run.mjs")], capture_output=True, text=True, timeout=60)
