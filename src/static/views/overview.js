@@ -279,12 +279,73 @@ async function render(el, { dataset, fovea, refresh }) {
         labels ? h('span', { class: 'n' }, b.count ? fmt.compact(b.count) : '0') : null,
         h('i', { class: b.count ? '' : 'zero', style: `height:${b.count ? Math.max(2, 100 * b.count / max) : 2}%${color ? `;background:${color}` : ''}` }), h('span', { class: 'l' }, b.label))));
   }
+  // Boxes per image with the classes the boxes are: each bar (the images holding k boxes) is split into the classes
+  // of those boxes, the most common classes named in the legend. Picking a class in the legend shows that class's
+  // own count per image instead (how many images hold 1, 2 … 10+ of it). The pick survives redraws.
+  const BPI_TOP = 10;
+  let bpiFocus = null;
   function bpiCard(stats) {
     const by = new Map(stats.boxes_per_image.map(b => [b.k, b.count]));
     // Every bucket 0…10+ is drawn, empty ones too: a missing bar is not the same as a short one.
     const items = Array.from({ length: 11 }, (_, k) => ({ k, label: k === 10 ? '10+' : String(k), count: k === 0 ? (by.get(0) ?? stats.totals.empty ?? 0) : (by.get(k) || 0) }));
     const any = items.some(b => b.count);
-    return card('Boxes per image', 'labeled images', any ? vbars(items, { tip: (b) => `${b.label} ${b.k === 1 ? 'box' : 'boxes'}: ${fmt.num(b.count)} images` }) : ui.emptyState({ icon: 'square', title: 'No labeled images', message: 'Counts appear once images have label files.' }), 'span-4');
+    if (!any) return card('Boxes per image', 'labeled images', ui.emptyState({ icon: 'square', title: 'No labeled images', message: 'Counts appear once images have label files.' }), 'span-4');
+    if (!stats.boxes_per_image_classes) return card('Boxes per image', 'labeled images', vbars(items, { tip: (b) => `${b.label} ${b.k === 1 ? 'box' : 'boxes'}: ${fmt.num(b.count)} images` }), 'span-4');
+    const ranked = stats.classes.filter(c => c.boxes > 0).sort((a, b2) => b2.boxes - a.boxes || a.cls - b2.cls);
+    const top = ranked.slice(0, BPI_TOP), rest = ranked.slice(BPI_TOP), topIds = new Set(top.map(c => c.cls));
+    const nameOf = (c) => className(ds.classes, c);
+    const comp = new Map();                 // k -> Map(cls -> boxes)
+    for (const r of stats.boxes_per_image_classes) { if (!comp.has(r.k)) comp.set(r.k, new Map()); comp.get(r.k).set(r.cls, r.boxes); }
+    if (bpiFocus != null && !ranked.some(c => c.cls === bpiFocus)) bpiFocus = null;
+    const body = h('div');
+    const section = card('Boxes per image', '', body, 'span-4');
+    const sub = h('span', { class: 'sub' });
+    section.querySelector('.card-header h3').after(sub);
+    paint();
+    return section;
+
+    function paint() {
+      if (bpiFocus == null) {
+        sub.textContent = 'labeled images · split by class';
+        const bars = items.map(b => {
+          const m = comp.get(b.k) || new Map();
+          const total = [...m.values()].reduce((n, v) => n + v, 0);
+          const segs = top.map(c => ({ value: m.get(c.cls) || 0, color: classColor(c.cls) }));
+          const other = [...m].filter(([c]) => !topIds.has(c)).reduce((n, [, v]) => n + v, 0);
+          if (other) segs.push({ value: other, color: 'var(--text-3)' });
+          const named = [...m].sort((x, y) => y[1] - x[1]).slice(0, 4).map(([c, v]) => `${nameOf(c)} ${fmt.num(v)} (${Math.round(100 * v / total)}%)`);
+          return { ...b, segs, tip: `${b.label} ${b.k === 1 ? 'box' : 'boxes'}: ${fmt.num(b.count)} images${named.length ? ' · ' + named.join(' · ') + (m.size > 4 ? ' …' : '') : ''}` };
+        });
+        put(body, stackBars(bars), legend());
+      } else {
+        const c = bpiFocus, nm = nameOf(c), color = classColor(c);
+        sub.textContent = `labeled images · ${nm} per image`;
+        const per = new Map(stats.class_per_image.filter(r => r.cls === c).map(r => [r.k, r.images]));
+        const holding = [...per.values()].reduce((n, v) => n + v, 0);
+        const own = items.map(b => ({ k: b.k, label: b.label, count: b.k === 0 ? Math.max(0, (stats.totals.labeled || 0) - holding) : (per.get(b.k) || 0) }));
+        put(body, vbars(own, { color, tip: (b) => `${b.label} × ${nm}: ${fmt.num(b.count)} images` }), legend());
+      }
+    }
+    function legend() {
+      const chip = (c) => h('button', { class: cls('chip outline clickable bpi-cls', bpiFocus === c.cls && 'active'), type: 'button', 'aria-pressed': String(bpiFocus === c.cls),
+        'data-tip': bpiFocus === c.cls ? 'Back to all classes' : `How many ${nameOf(c.cls)} boxes each image holds`,
+        onClick: () => { bpiFocus = bpiFocus === c.cls ? null : c.cls; paint(); } },
+        h('span', { class: 'swatch', style: `background:${classColor(c.cls)}` }), h('span', { class: 'truncate' }, nameOf(c.cls)));
+      return h('div', { class: 'legend bpi-legend mt-8', 'aria-label': 'Classes' }, top.map(chip),
+        rest.length ? h('span', { class: 'chip outline', title: rest.map(c => nameOf(c.cls)).join(', ') }, h('span', { class: 'swatch', style: 'background:var(--text-3)' }), `${rest.length} other`) : null,
+        bpiFocus != null ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onClick: () => { bpiFocus = null; paint(); } }, 'All classes') : null);
+    }
+  }
+  /** vbars whose bars are split into coloured segments (`segs`: {value, color}, bottom first). */
+  function stackBars(items, { height = 120 } = {}) {
+    const max = Math.max(1, ...items.map(b => b.count));
+    return h('div', { class: 'vbars', style: `height:${height}px`, role: 'img', 'aria-label': items.map(b => b.tip).join('; ') },
+      items.map(b => {
+        const total = b.segs.reduce((n, sg) => n + sg.value, 0);
+        const bar = h('i', { class: cls(b.count && total ? 'stack' : b.count ? 'nobox' : 'zero'), style: `height:${b.count ? Math.max(2, 100 * b.count / max) : 2}%` },
+          b.count && total ? b.segs.filter(sg => sg.value).map(sg => h('b', { style: `flex:${sg.value} 1 0;background:${sg.color}` })) : null);
+        return h('div', { class: 'vb', 'data-tip': b.tip }, h('span', { class: 'n' }, b.count ? fmt.compact(b.count) : '0'), bar, h('span', { class: 'l' }, b.label));
+      }));
   }
   function sizeCard(stats) {
     const any = stats.box_area.some(b => b.count);

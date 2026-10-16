@@ -653,6 +653,26 @@ def test_stats_are_cached_until_a_label_changes_and_aspect_is_in_pixels(tmp_path
         _drop(ds_id)
 
 
+def test_boxes_per_image_names_the_classes_of_each_bucket(tmp_path):
+    """Overview's Boxes per image: which classes the boxes of each bucket are, and each class's own count per image."""
+    root = tmp_path / "mix"
+    for n, rows in (("a", "0 0.2 0.2 0.1 0.1\n0 0.4 0.4 0.1 0.1\n1 0.6 0.6 0.1 0.1\n"),    # 3 boxes: 2 × class 0, 1 × 1
+                    ("b", "1 0.5 0.5 0.1 0.1\n"),                                          # 1 box of class 1
+                    ("c", "".join(f"0 {0.05 + 0.07 * k:.3f} 0.5 0.05 0.05\n" for k in range(12)))):   # 12 → bucket 10+
+        _img(root / "images" / f"{n}.jpg")
+        _lbl(root / "labels" / f"{n}.txt", rows)
+    ds_id = _register(root, classes=["cat", "dog"], source="user")
+    try:
+        _scan(ds_id)
+        s = stats.dataset_stats(ds_id, ["cat", "dog"])
+        comp = {(r["k"], r["cls"]): r["boxes"] for r in s["boxes_per_image_classes"]}
+        assert comp == {(3, 0): 2, (3, 1): 1, (1, 1): 1, (10, 0): 12}
+        own = {(r["cls"], r["k"]): r["images"] for r in s["class_per_image"]}
+        assert own == {(0, 2): 1, (0, 10): 1, (1, 1): 2}
+    finally:
+        _drop(ds_id)
+
+
 # --------------------------------------------------------------------------- API: labels, bulk, review
 
 def test_label_put_validation_and_readonly_folder(scanned):
