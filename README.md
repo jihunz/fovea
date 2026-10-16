@@ -79,7 +79,7 @@ docker compose up --build -d           # http://localhost:8888
 - **History**: 라벨 버전(스냅샷) 목록, 버전별 변경 내역(이미지별 박스 수, 클래스별 +/−), 전체 또는 이미지 단위 **Restore**(AI 제안 일괄 수락을 되돌리면 그 제안도 다시 대기 상태로), **Save version**. 보관 개수와 Restore·Undo의 차이는 아래 [라벨 파일 안전](#라벨-파일-안전).
 - **Dataset**: 루트와 분할별 폴더, 다른 형식에서 변환한 어노테이션의 형식 카드(출처·공식 링크·인용·개수, **Convert again**으로 원본에서 다시 변환 — 그 전에 라벨 버전 저장), `data.yaml` 쓰기/갱신(주석 유지, `data.yaml.bak` 백업), 마지막 인덱싱 보고서(접힌 상태 — 문제 종류별 개수와 예시 최대 5개, 예: 이미지 폴더가 없는 라벨 폴더), **Dataset card**(`DATASET_CARD.md` 다운로드).
 - **Classes**: 클래스 이름 편집(중복 검사, 저장 전 초안 유지), **Paste names**로 이름 전체를 JSON·`names:` 블록·줄 단위로 한 번에 붙여넣기(이름 칸에 여러 이름을 붙여 넣어도 그 행부터 채움), 클래스마다 **Examples**(Objects에서 그 클래스의 박스 전체 보기)와 **Card**(AI에 주는 프롬프트·정의·포함/제외 기준·예시 박스). 이름이 `class_0`처럼 비어 있는 데이터셋에는 **Suggest names with AI**가 강조됩니다.
-- 분포 차트: 클래스 분포, 분할별 통계, 이미지당 박스 수, 박스 크기·종횡비, 박스 중심 히트맵, 해상도.
+- 분포 차트: 클래스 분포, 분할별 통계, 이미지당 박스 수(막대를 그 박스들의 클래스별로 나눠 칠하고 범례에 클래스 이름 표시 — 막대에 올리면 클래스별 박스 수, 범례의 클래스를 누르면 그 클래스가 이미지마다 몇 개인지의 분포), 박스 크기·종횡비, 박스 중심 히트맵, 해상도.
 
 ### Explore
 - 툴바: 파일 이름 검색, 분할, **Classes**(Any of / Only), **Filters**(라벨 상태, 리뷰 상태, AI 상태, 박스 수 범위, 라벨 파일·데이터 품질·AI 감사 이슈), 정렬(Index, Name, Boxes, Resolution, Modified, Reviewed, Random + **Shuffle**, Most suspicious first(데이터 품질 플래그로 거를 때만), Most suspect (AI audit), Lowest AI confidence), 타일 크기, 박스 표시, 저장된 보기. 활성 필터는 모두 지울 수 있는 칩으로 보입니다.

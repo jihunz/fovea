@@ -109,6 +109,12 @@ def _heavy(dataset_id: str, class_names: List[str]) -> Dict[str, Any]:
 
     bpi = db.query("""SELECT MIN(n_boxes, 10) k, COUNT(*) c FROM images WHERE dataset_id=? AND has_label=1
                       GROUP BY k ORDER BY k""", (dataset_id,))
+    # Boxes per image by class: which classes the boxes of each bucket (the image's box count, 10 = 10+) are, and
+    # each class's own count per image (how many images hold 1, 2 … 10+ boxes of it).
+    bpi_cls = db.query("""SELECT MIN(i.n_boxes, 10) k, b.cls, COUNT(*) c FROM boxes b JOIN images i ON i.id = b.image_id
+                          WHERE b.dataset_id=? AND i.has_label=1 GROUP BY k, b.cls""", (dataset_id,))
+    per_cls = db.query("""SELECT cls, MIN(n, 10) k, COUNT(*) c FROM (SELECT image_id, cls, COUNT(*) n FROM boxes
+                          WHERE dataset_id=? GROUP BY image_id, cls) GROUP BY cls, k""", (dataset_id,))
     dims = db.query("""SELECT width, height, COUNT(*) c FROM images WHERE dataset_id=? AND width IS NOT NULL
                        GROUP BY width, height ORDER BY c DESC LIMIT 8""", (dataset_id,))
     dims_total = db.query_one("SELECT COUNT(*) n FROM (SELECT 1 FROM images WHERE dataset_id=? AND width IS NOT NULL "
@@ -162,6 +168,8 @@ def _heavy(dataset_id: str, class_names: List[str]) -> Dict[str, Any]:
         "classes": class_list,
         "empty_classes": [c["cls"] for c in class_list if c["empty"]],
         "boxes_per_image": [{"k": int(r["k"]), "count": r["c"]} for r in bpi],
+        "boxes_per_image_classes": [{"k": int(r["k"]), "cls": int(r["cls"]), "boxes": r["c"]} for r in bpi_cls],
+        "class_per_image": [{"cls": int(r["cls"]), "k": int(r["k"]), "images": r["c"]} for r in per_cls],
         "dimensions": [{"width": r["width"], "height": r["height"], "count": r["c"]} for r in dims],
         "dimensions_distinct": dims_total.get("n", 0),
         "box_area": [{"label": lbl, "count": area_counts.get(i, 0)} for i, (lbl, _) in enumerate(AREA_BINS)],
